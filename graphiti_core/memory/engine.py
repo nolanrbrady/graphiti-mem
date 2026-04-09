@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -131,7 +133,7 @@ class MemoryEngine:
             agent_instructions_path=project.agent_instructions_path,
         )
 
-        driver = cls._build_driver(config, project)
+        driver = await cls._open_driver_with_retry(config, project)
         await driver.build_indices_and_constraints()
 
         llm_client: LLMClient = NullLLMClient()
@@ -196,6 +198,29 @@ class MemoryEngine:
         )
 
         return cls(project, config, driver, clients, graphiti, structured_memory_enabled)
+
+    @classmethod
+    async def _open_driver_with_retry(
+        cls,
+        config: RuntimeConfig,
+        project: ProjectPaths,
+    ) -> GraphDriver:
+        if config.backend is not BackendType.kuzu:
+            return cls._build_driver(config, project)
+
+        last_error: Exception | None = None
+        for _ in range(50):
+            try:
+                return cls._build_driver(config, project)
+            except Exception as exc:
+                if 'Could not set lock on file' not in str(exc):
+                    raise
+                last_error = exc
+                await asyncio.sleep(0.1)
+
+        raise RuntimeError(
+            'Graphiti database is busy. Another Graphiti process is holding the Kuzu lock.'
+        ) from last_error
 
     @staticmethod
     def _build_driver(config: RuntimeConfig, project: ProjectPaths) -> GraphDriver:
@@ -354,8 +379,13 @@ class MemoryEngine:
         content: str,
         source_description: str,
         created_at: datetime | None = None,
+        existing_uuid: str = '',
     ) -> EpisodicNode:
         timestamp = created_at or utc_now()
+        episode_kwargs: dict[str, Any] = {}
+        if existing_uuid:
+            episode_kwargs['uuid'] = existing_uuid
+
         episode = EpisodicNode(
             name=name,
             group_id=self.config.project_id,
@@ -365,6 +395,7 @@ class MemoryEngine:
             source_description=source_description,
             created_at=timestamp,
             valid_at=timestamp,
+            **episode_kwargs,
         )
         await episode.save(self.driver)
         return episode
@@ -376,6 +407,7 @@ class MemoryEngine:
         content: str,
         source_description: str,
         created_at: datetime | None = None,
+        existing_uuid: str = '',
     ) -> EpisodicNode:
         timestamp = created_at or utc_now()
         if self.structured_memory_enabled and self.graphiti is not None:
@@ -393,6 +425,7 @@ class MemoryEngine:
             content=content,
             source_description=source_description,
             created_at=timestamp,
+            existing_uuid=existing_uuid,
         )
 
     def list_history_sessions(
@@ -483,6 +516,7 @@ class MemoryEngine:
         provenance: dict[str, str] | None = None,
         captured_at: datetime | None = None,
         prefer_plain_episode: bool = False,
+        existing_uuid: str = '',
     ) -> dict[str, str]:
         content = self._render_memory_content(
             kind,
@@ -518,6 +552,7 @@ class MemoryEngine:
                 content=content,
                 source_description=source_description,
                 created_at=captured_at,
+                existing_uuid=existing_uuid,
             )
             mode = 'episode'
 
@@ -639,6 +674,88 @@ class MemoryEngine:
             parts.append(f'details={details}')
         return '- ' + ' | '.join(parts)
 
+    def _tokenize_query(self, text: str) -> set[str]:
+        return {
+            token
+            for token in re.findall(r'[a-z0-9_]+', text.lower())
+            if len(token) >= 3
+        }
+
+    def _memory_overlap_score(self, memory: ParsedMemoryEpisode, query: str) -> int:
+        haystack = ' '.join(
+            [
+                memory.summary,
+                memory.details,
+                memory.source,
+                memory.artifact_path,
+                memory.raw_name,
+                memory.thread_title,
+            ]
+        ).lower()
+        tokens = self._tokenize_query(query)
+        if not tokens:
+            return 0
+
+        overlap = sum(1 for token in tokens if token in haystack)
+        if query.lower() in haystack:
+            overlap += max(2, len(tokens))
+        return overlap
+
+    async def _fallback_memory_episodes(
+        self,
+        query: str,
+        *,
+        limit: int,
+        exclude_ids: set[str] | None = None,
+    ) -> list[ParsedMemoryEpisode]:
+        exclude = exclude_ids or set()
+        episodes = await EpisodicNode.get_by_group_ids(
+            self.driver,
+            [self.config.project_id],
+            limit=max(limit * 8, 64),
+        )
+
+        ranked: list[tuple[int, ParsedMemoryEpisode]] = []
+        for episode in episodes:
+            if episode.uuid in exclude:
+                continue
+            parsed = self._parse_memory_episode(episode)
+            if parsed is None:
+                continue
+            score = self._memory_overlap_score(parsed, query)
+            if score <= 0:
+                continue
+            ranked.append((score, parsed))
+
+        ranked.sort(
+            key=lambda item: (
+                -item[0],
+                -(
+                    item[1].created_at.timestamp()
+                    if item[1].created_at is not None
+                    else 0
+                ),
+            )
+        )
+        return [parsed for _, parsed in ranked[:limit]]
+
+    def _matching_snippet(self, text: str, query: str, *, max_len: int = 220) -> str:
+        tokens = self._tokenize_query(query)
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        best_line = ''
+        best_score = 0
+        for line in lines:
+            normalized = line.lower()
+            score = sum(1 for token in tokens if token in normalized)
+            if query.lower() in normalized:
+                score += max(2, len(tokens))
+            if score > best_score:
+                best_score = score
+                best_line = line
+        if best_line:
+            return best_line[:max_len]
+        return text.replace('\n', ' ')[:max_len]
+
     async def recall(self, query: str, limit: int = RECALL_LIMIT) -> str:
         results = await self._search(query, limit=max(limit, DEFAULT_SEARCH_LIMIT))
 
@@ -669,6 +786,18 @@ class MemoryEngine:
             if parsed is not None:
                 parsed_episodes.append(parsed)
 
+        if len(parsed_episodes) < limit:
+            fallback_episodes = await self._fallback_memory_episodes(
+                query,
+                limit=limit * 2,
+                exclude_ids=seen_episodes,
+            )
+            for episode in fallback_episodes:
+                if episode.uuid in seen_episodes:
+                    continue
+                seen_episodes.add(episode.uuid)
+                parsed_episodes.append(episode)
+
         parsed_episodes.sort(
             key=lambda episode: (
                 MEMORY_KIND_PRIORITY[episode.kind],
@@ -695,6 +824,15 @@ class MemoryEngine:
         indexed_artifacts = [
             episode for episode in parsed_episodes if episode.kind is MemoryKind.index_artifact
         ]
+        unique_indexed_artifacts: list[ParsedMemoryEpisode] = []
+        seen_artifact_paths: set[str] = set()
+        for artifact in indexed_artifacts:
+            key = artifact.artifact_path or artifact.raw_name or artifact.summary
+            if key in seen_artifact_paths:
+                continue
+            seen_artifact_paths.add(key)
+            unique_indexed_artifacts.append(artifact)
+        indexed_artifacts = unique_indexed_artifacts
 
         lines: list[str] = []
 
@@ -746,7 +884,7 @@ class MemoryEngine:
             lines.append('Supporting Artifacts')
             for artifact in indexed_artifacts[:limit]:
                 created_at = artifact.created_at.isoformat() if artifact.created_at else 'unknown'
-                details = artifact.details.replace('\n', ' ')[:220]
+                details = self._matching_snippet(artifact.details, query)
                 path = artifact.artifact_path or artifact.raw_name
                 lines.append(
                     f'- {path} | captured_at={created_at} | summary={artifact.summary} | details={details}'
@@ -847,11 +985,22 @@ class MemoryEngine:
         commands: list[str] = []
         key_points: list[str] = []
         lines = [line.strip() for line in content.splitlines() if line.strip()]
-        summary = lines[0][:200] if lines else title
+        summary = title
         for line in lines[:40]:
             if line.startswith('#'):
                 key_points.append(line.lstrip('# ').strip())
-            if line.startswith(('make ', 'uv ', 'pip ', 'python ', 'docker ', 'pytest ')):
+                continue
+            normalized = line.lower()
+            if summary == title and len(line) > 8:
+                summary = line[:200]
+            if line.startswith('- '):
+                key_points.append(line[2:].strip())
+            if any(token in normalized for token in ('default', 'kuzu', 'neo4j', 'mcp', 'cli')):
+                key_points.append(line[:180])
+            if any(
+                marker in normalized
+                for marker in ('make ', 'uv ', 'pip ', 'python ', 'docker ', 'pytest ')
+            ):
                 commands.append(line)
         return ArtifactSummary(
             summary=summary,
@@ -916,9 +1065,6 @@ class MemoryEngine:
                 previous = artifacts_state.get(artifact.key, {})
                 if changed_only and previous.get('fingerprint') == artifact.fingerprint:
                     continue
-
-                await self._delete_episode_if_present(previous.get('episode_uuid', ''))
-                await self._delete_episodes(previous.get('memory_episode_uuids', []))
 
                 summary = await self._summarize_artifact(artifact.title, artifact.body)
                 details = self._artifact_details(artifact, summary)

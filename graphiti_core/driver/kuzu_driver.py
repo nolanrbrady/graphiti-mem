@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import asyncio
 import logging
 from typing import Any
 
@@ -143,10 +144,10 @@ class KuzuDriver(GraphDriver):
         super().__init__()
         self._database = 'local'
         self.db = kuzu.Database(db)
+        self.max_concurrent_queries = max_concurrent_queries
+        self._query_lock = asyncio.Lock()
 
         self.setup_schema()
-
-        self.client = kuzu.AsyncConnection(self.db, max_concurrent_queries=max_concurrent_queries)
 
         # Instantiate Kuzu operations
         self._entity_node_ops = KuzuEntityNodeOperations()
@@ -216,8 +217,11 @@ class KuzuDriver(GraphDriver):
         params.pop('routing_', None)
 
         try:
-            results = await self.client.execute(cypher_query_, parameters=params)
+            async with self._query_lock:
+                results = self._execute_query_sync(cypher_query_, params)
         except Exception as e:
+            if 'already exists' in str(e).lower():
+                raise
             params = {k: (v[:5] if isinstance(v, list) else v) for k, v in params.items()}
             logger.error(f'Error executing Kuzu query: {e}\n{cypher_query_}\n{params}')
             raise
@@ -235,7 +239,7 @@ class KuzuDriver(GraphDriver):
         return KuzuDriverSession(self)
 
     async def close(self):
-        # Do not explicitly close the connection, instead rely on GC.
+        # Connections are short-lived per query; the database handle is owned by the driver.
         pass
 
     def delete_all_indexes(self, database_: str):
@@ -248,6 +252,17 @@ class KuzuDriver(GraphDriver):
         conn = kuzu.Connection(self.db)
         conn.execute(SCHEMA_QUERIES)
         conn.close()
+
+    def _execute_query_sync(
+        self,
+        cypher_query_: str,
+        params: dict[str, Any],
+    ):
+        conn = kuzu.Connection(self.db)
+        try:
+            return conn.execute(cypher_query_, parameters=params)
+        finally:
+            conn.close()
 
 
 class KuzuDriverSession(GraphDriverSession):

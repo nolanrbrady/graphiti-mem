@@ -48,8 +48,8 @@ class ProjectPaths:
 class RuntimeConfig:
     project_name: str
     project_id: str
-    backend: BackendType = BackendType.kuzu
     database_path: str
+    backend: BackendType = BackendType.kuzu
     llm_model: str = 'gpt-4.1-mini'
     llm_small_model: str = 'gpt-4.1-nano'
     llm_base_url: str = ''

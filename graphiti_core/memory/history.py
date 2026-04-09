@@ -24,6 +24,20 @@ def _parse_timestamp(value: str | None) -> datetime | None:
         return None
 
 
+def _parse_unix_timestamp(value: int | float | None) -> datetime | None:
+    if value is None:
+        return None
+
+    numeric = float(value)
+    if numeric > 10_000_000_000:
+        numeric /= 1000.0
+
+    try:
+        return datetime.fromtimestamp(numeric, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 def _trim_content(content: str) -> str:
     return content.strip()[:MAX_SESSION_CHARS].strip()
 
@@ -69,7 +83,9 @@ def _discover_codex_sessions(base: Path, root: Path, since: datetime) -> list[Bo
         connection.close()
 
         for row in rows:
-            created_at = datetime.fromtimestamp(row['updated_at'] / 1000, tz=timezone.utc)
+            created_at = _parse_unix_timestamp(row['updated_at'])
+            if created_at is None:
+                continue
             if created_at < since:
                 continue
 
