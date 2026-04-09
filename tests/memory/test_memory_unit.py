@@ -53,7 +53,9 @@ class FakeEngine:
         self.remember_calls.append(kwargs)
         return {'uuid': 'memory-1', 'mode': 'episode'}
 
-    async def index(self, *, changed_only: bool = False, max_files: int = 24) -> list[dict[str, str]]:
+    async def index(
+        self, *, changed_only: bool = False, max_files: int = 24
+    ) -> list[dict[str, str]]:
         self.index_calls.append({'changed_only': changed_only, 'max_files': max_files})
         if changed_only:
             return []
@@ -157,6 +159,8 @@ def test_apply_agent_instructions_creates_and_replaces_managed_block(tmp_path: P
     agents_path = config.apply_agent_instructions(tmp_path)
     created = agents_path.read_text()
     assert config.GRAPHITI_BLOCK_START in created
+    assert 'MCP recall triggers:' in created
+    assert 'MCP write triggers:' in created
 
     agents_path.write_text(
         '# Existing\n\n'
@@ -169,6 +173,33 @@ def test_apply_agent_instructions_creates_and_replaces_managed_block(tmp_path: P
     assert updated.count(config.GRAPHITI_BLOCK_START) == 1
     assert 'Tail note.' in updated
     assert 'old' not in updated
+
+
+def test_install_codex_mcp_server_creates_and_updates_config(tmp_path: Path) -> None:
+    home = tmp_path / 'home'
+
+    config_path, changed = config.install_codex_mcp_server(
+        home,
+        python_executable='/tmp/venv/bin/python',
+    )
+    assert changed is True
+    assert config_path == home / '.codex' / 'config.toml'
+    contents = config_path.read_text()
+    assert '[mcp_servers.graphiti]' in contents
+    assert 'command = "/tmp/venv/bin/python"' in contents
+    assert 'graphiti_core.memory.cli' in contents
+    assert config.codex_mcp_server_installed(home) is True
+
+    config_path.write_text(contents + '\n[mcp_servers.other]\ncommand = "npx"\n')
+    _, changed = config.install_codex_mcp_server(
+        home,
+        python_executable='/tmp/venv/bin/python3.12',
+    )
+    assert changed is True
+    updated = config_path.read_text()
+    assert updated.count('[mcp_servers.graphiti]') == 1
+    assert 'command = "/tmp/venv/bin/python3.12"' in updated
+    assert '[mcp_servers.other]' in updated
 
 
 def test_load_index_state_defaults_and_normalization(tmp_path: Path) -> None:
@@ -227,7 +258,10 @@ def test_history_parsers_cover_invalid_and_mixed_formats(tmp_path: Path) -> None
                 '{"bad": ',
                 json.dumps({'type': 'event_msg', 'payload': {'type': 'tool_call', 'message': 'x'}}),
                 json.dumps(
-                    {'type': 'event_msg', 'payload': {'type': 'user_message', 'message': 'User asks'}}
+                    {
+                        'type': 'event_msg',
+                        'payload': {'type': 'user_message', 'message': 'User asks'},
+                    }
                 ),
                 json.dumps(
                     {
@@ -244,7 +278,10 @@ def test_history_parsers_cover_invalid_and_mixed_formats(tmp_path: Path) -> None
     assert 'Assistant: Assistant answers' in parsed_rollout
 
     assert history._extract_claude_text('plain text') == 'plain text'
-    assert history._extract_claude_text([{'type': 'text', 'text': 'hello'}, {'type': 'tool_use'}]) == 'hello'
+    assert (
+        history._extract_claude_text([{'type': 'text', 'text': 'hello'}, {'type': 'tool_use'}])
+        == 'hello'
+    )
     assert history._extract_claude_text({'bad': 'shape'}) == ''
 
     claude_path = tmp_path / 'claude.jsonl'
@@ -280,7 +317,9 @@ def test_history_parsers_cover_invalid_and_mixed_formats(tmp_path: Path) -> None
     assert created_at is not None
 
 
-def test_discover_codex_sessions_handles_sqlite_failures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_discover_codex_sessions_handles_sqlite_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     class BrokenSqliteError(Exception):
         pass
 
@@ -442,10 +481,17 @@ async def test_engine_choose_backend_detect_state_and_query_records(
             )
         ]
     )
-    monkeypatch.setattr(MemoryEngine, 'discover_history', classmethod(lambda cls, root, history_days=90: history_payload))
+    monkeypatch.setattr(
+        MemoryEngine,
+        'discover_history',
+        classmethod(lambda cls, root, history_days=90: history_payload),
+    )
+    monkeypatch.setenv('HOME', str(root))
     state = MemoryEngine.detect_onboarding_state(root, history_days=30)
     assert state['history_sessions_detected'] == 1
     assert state['backend'] == 'neo4j'
+    assert state['codex_config_path'].endswith('.codex/config.toml')
+    assert state['codex_mcp_installed'] is False
 
     engine = build_engine(root)
 
@@ -471,7 +517,9 @@ async def test_engine_choose_backend_detect_state_and_query_records(
 
 
 @pytest.mark.asyncio
-async def test_open_driver_with_retry_handles_lock_contention(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_open_driver_with_retry_handles_lock_contention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     project = build_project_paths(tmp_path)
     config_obj = RuntimeConfig(
         project_name='demo',
@@ -515,7 +563,9 @@ async def test_open_driver_retry_non_kuzu_and_busy_paths(
         backend=BackendType.kuzu,
     )
 
-    monkeypatch.setattr(MemoryEngine, '_build_driver', staticmethod(lambda _config, _project: 'neo4j-driver'))
+    monkeypatch.setattr(
+        MemoryEngine, '_build_driver', staticmethod(lambda _config, _project: 'neo4j-driver')
+    )
     assert await MemoryEngine._open_driver_with_retry(neo4j_config, project) == 'neo4j-driver'
 
     def raise_other(_config: RuntimeConfig, _project: Any):
@@ -583,7 +633,9 @@ async def test_cli_command_paths_and_error_handling(
     assert await cli._run_async(argparse.Namespace(command='index', changed=True, max_files=5)) == 0
     assert 'No artifacts needed re-indexing.' in capsys.readouterr().out
 
-    assert await cli._run_async(argparse.Namespace(command='index', changed=False, max_files=5)) == 0
+    assert (
+        await cli._run_async(argparse.Namespace(command='index', changed=False, max_files=5)) == 0
+    )
     assert 'Indexed 1 artifact(s).' in capsys.readouterr().out
 
     assert await cli._run_async(argparse.Namespace(command='doctor')) == 0
@@ -628,14 +680,36 @@ async def test_cli_init_prompt_and_large_history_paths(
         return FakeContext(fake_engine)
 
     monkeypatch.setattr(cli, 'detect_project_root', lambda path: tmp_path)
-    monkeypatch.setattr(cli.MemoryEngine, 'choose_backend', classmethod(lambda cls, root, requested_backend=None: BackendType.kuzu))
-    monkeypatch.setattr(cli.MemoryEngine, 'default_runtime_config', classmethod(lambda cls, root, backend=None: config_obj))
-    monkeypatch.setattr(cli.MemoryEngine, 'init_project', staticmethod(lambda root, force=False, config=None: (paths, config_obj)))
-    monkeypatch.setattr(cli.MemoryEngine, 'discover_history', classmethod(lambda cls, root, history_days=90: discovery))
-    monkeypatch.setattr(cli.MemoryEngine, 'bootstrap_warning_threshold', classmethod(lambda cls: 10))
+    monkeypatch.setattr(
+        cli.MemoryEngine,
+        'choose_backend',
+        classmethod(lambda cls, root, requested_backend=None: BackendType.kuzu),
+    )
+    monkeypatch.setattr(
+        cli.MemoryEngine,
+        'default_runtime_config',
+        classmethod(lambda cls, root, backend=None: config_obj),
+    )
+    monkeypatch.setattr(
+        cli.MemoryEngine,
+        'init_project',
+        staticmethod(lambda root, force=False, config=None: (paths, config_obj)),
+    )
+    monkeypatch.setattr(
+        cli.MemoryEngine,
+        'discover_history',
+        classmethod(lambda cls, root, history_days=90: discovery),
+    )
+    monkeypatch.setattr(
+        cli.MemoryEngine, 'bootstrap_warning_threshold', classmethod(lambda cls: 10)
+    )
     monkeypatch.setattr(cli.MemoryEngine, 'open', fake_open)
     monkeypatch.setattr(cli, 'apply_agent_instructions', lambda root: root / 'AGENTS.md')
-    monkeypatch.setattr(cli, '_prompt_yes_no', lambda prompt, default=True, interactive=True: prompts.append(prompt) or next(answers))
+    monkeypatch.setattr(
+        cli,
+        '_prompt_yes_no',
+        lambda prompt, default=True, interactive=True: prompts.append(prompt) or next(answers),
+    )
     monkeypatch.setattr(cli.sys, 'stdin', SimpleNamespace(isatty=lambda: True))
     monkeypatch.chdir(tmp_path)
 
@@ -647,6 +721,8 @@ async def test_cli_init_prompt_and_large_history_paths(
             skip_history=False,
             apply_agents=False,
             no_apply_agents=False,
+            install_mcp=False,
+            no_install_mcp=False,
             backend=None,
             history_days=90,
         )
@@ -657,6 +733,7 @@ async def test_cli_init_prompt_and_large_history_paths(
     assert prompts[0].startswith('Apply the managed Graphiti block')
     assert prompts[1].startswith('Import 1 matching Codex/Claude project sessions')
     assert '- Updated agent instructions:' not in output
+    assert '- Left Codex MCP config unchanged' in output
     assert '- Imported transcript source sessions: 1' in output
 
     large_discovery = BootstrapDiscovery(
@@ -673,7 +750,11 @@ async def test_cli_init_prompt_and_large_history_paths(
             for index in range(12)
         ]
     )
-    monkeypatch.setattr(cli.MemoryEngine, 'discover_history', classmethod(lambda cls, root, history_days=90: large_discovery))
+    monkeypatch.setattr(
+        cli.MemoryEngine,
+        'discover_history',
+        classmethod(lambda cls, root, history_days=90: large_discovery),
+    )
     monkeypatch.setattr(cli.sys, 'stdin', SimpleNamespace(isatty=lambda: False))
     rc = await cli._run_init(
         argparse.Namespace(
@@ -683,6 +764,8 @@ async def test_cli_init_prompt_and_large_history_paths(
             skip_history=False,
             apply_agents=False,
             no_apply_agents=False,
+            install_mcp=False,
+            no_install_mcp=False,
             backend=None,
             history_days=90,
         )
@@ -785,7 +868,9 @@ async def test_engine_structured_and_recall_helper_paths(
 
     engine = build_engine(tmp_path)
     fake_graphiti = SimpleNamespace(
-        add_episode=lambda **kwargs: asyncio.sleep(0, result=SimpleNamespace(episode=SimpleNamespace(uuid='structured-episode')))
+        add_episode=lambda **kwargs: asyncio.sleep(
+            0, result=SimpleNamespace(episode=SimpleNamespace(uuid='structured-episode'))
+        )
     )
     engine.graphiti = fake_graphiti
     engine.structured_memory_enabled = True
@@ -854,8 +939,30 @@ async def test_engine_structured_and_recall_helper_paths(
     assert 'agent=codex' in rendered
     assert 'thread=Migrate memory runtime' in rendered
 
-    assert engine._parse_memory_episode(SimpleNamespace(content='Summary: no kind', uuid='u', name='n', source_description='s', created_at=None)) is None
-    assert engine._parse_memory_episode(SimpleNamespace(content='Kind: unknown\nSummary: bad', uuid='u', name='n', source_description='s', created_at=None)) is None
+    assert (
+        engine._parse_memory_episode(
+            SimpleNamespace(
+                content='Summary: no kind',
+                uuid='u',
+                name='n',
+                source_description='s',
+                created_at=None,
+            )
+        )
+        is None
+    )
+    assert (
+        engine._parse_memory_episode(
+            SimpleNamespace(
+                content='Kind: unknown\nSummary: bad',
+                uuid='u',
+                name='n',
+                source_description='s',
+                created_at=None,
+            )
+        )
+        is None
+    )
 
     await engine._delete_episode_if_present('')
     await engine._delete_episode_if_present('missing')
@@ -925,7 +1032,13 @@ async def test_engine_recall_index_import_and_doctor_paths(
         )
 
     monkeypatch.setattr(engine, '_search', fake_search)
-    monkeypatch.setattr(engine, '_edge_evidence', lambda edges: asyncio.sleep(0, result={'source-1': 'bootstrap source', 'source-2': 'old source'}))
+    monkeypatch.setattr(
+        engine,
+        '_edge_evidence',
+        lambda edges: asyncio.sleep(
+            0, result={'source-1': 'bootstrap source', 'source-2': 'old source'}
+        ),
+    )
     monkeypatch.setattr(
         engine,
         '_fallback_memory_episodes',
@@ -959,19 +1072,39 @@ async def test_engine_recall_index_import_and_doctor_paths(
     assert 'Supporting Artifacts' in recall
     assert recall.count('README.md') == 1
 
-    monkeypatch.setattr(engine, '_search', lambda query, limit=8: asyncio.sleep(0, result=SimpleNamespace(edges=[], episodes=[])))
+    monkeypatch.setattr(
+        engine,
+        '_search',
+        lambda query, limit=8: asyncio.sleep(0, result=SimpleNamespace(edges=[], episodes=[])),
+    )
     monkeypatch.setattr(engine, '_edge_evidence', lambda edges: asyncio.sleep(0, result={}))
-    monkeypatch.setattr(engine, '_fallback_memory_episodes', lambda query, limit, exclude_ids=None: asyncio.sleep(0, result=[]))
+    monkeypatch.setattr(
+        engine,
+        '_fallback_memory_episodes',
+        lambda query, limit, exclude_ids=None: asyncio.sleep(0, result=[]),
+    )
     assert await engine.recall('nothing useful', limit=1) == 'No relevant memory found.'
 
     (tmp_path / 'AGENTS.md').write_text('Agent guidance')
     (tmp_path / 'README.md').write_text('# Demo\n')
     (tmp_path / '.git').mkdir(exist_ok=True)
-    monkeypatch.setattr(engine, '_summarize_artifact', lambda title, content: asyncio.sleep(0, result=ArtifactSummary(summary=title, key_points=[], commands=[])))
+    monkeypatch.setattr(
+        engine,
+        '_summarize_artifact',
+        lambda title, content: asyncio.sleep(
+            0, result=ArtifactSummary(summary=title, key_points=[], commands=[])
+        ),
+    )
     monkeypatch.setattr(
         engine,
         '_remember_unlocked',
-        lambda **kwargs: asyncio.sleep(0, result={'uuid': f"episode-{kwargs['artifact_path'] or kwargs['summary']}", 'mode': 'episode'}),
+        lambda **kwargs: asyncio.sleep(
+            0,
+            result={
+                'uuid': f'episode-{kwargs["artifact_path"] or kwargs["summary"]}',
+                'mode': 'episode',
+            },
+        ),
     )
     monkeypatch.setattr(engine, '_git_artifact', lambda: None)
     indexed = await engine.index(changed_only=False, max_files=4)
@@ -993,7 +1126,13 @@ async def test_engine_recall_index_import_and_doctor_paths(
             )
         ]
     )
-    monkeypatch.setattr(engine, '_save_source_episode', lambda **kwargs: asyncio.sleep(0, result=SimpleNamespace(uuid=f"source-{len(kwargs['content'])}")))
+    monkeypatch.setattr(
+        engine,
+        '_save_source_episode',
+        lambda **kwargs: asyncio.sleep(
+            0, result=SimpleNamespace(uuid=f'source-{len(kwargs["content"])}')
+        ),
+    )
     imported = await engine.import_history_sessions(discovery=discovery)
     skipped = await engine.import_history_sessions(discovery=discovery, session_ids=['other'])
     bootstrapped = await engine.bootstrap_history(discovery=discovery)
@@ -1001,17 +1140,28 @@ async def test_engine_recall_index_import_and_doctor_paths(
     assert skipped == []
     assert bootstrapped == []
 
-    monkeypatch.setattr(engine, '_query_records', lambda query, **kwargs: asyncio.sleep(0, result=[{'episode_count': 7}]))
+    monkeypatch.setattr(
+        engine,
+        '_query_records',
+        lambda query, **kwargs: asyncio.sleep(0, result=[{'episode_count': 7}]),
+    )
     doctor = await engine.doctor()
     assert 'Episodes: 7' in doctor
     assert 'History bootstrap sessions: 1' in doctor
+    assert 'Codex MCP installed:' in doctor
 
 
 @pytest.mark.asyncio
-async def test_mcp_tool_definitions_and_stdio_dispatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_mcp_tool_definitions_and_stdio_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     tools = {tool['name']: tool for tool in mcp._tool_definitions()}
     assert 'remember' in tools
-    assert tools['init_project']['inputSchema']['properties']['backend']['enum'] == ['kuzu', 'neo4j']
+    assert tools['init_project']['inputSchema']['properties']['backend']['enum'] == [
+        'kuzu',
+        'neo4j',
+    ]
+    assert tools['init_project']['inputSchema']['properties']['install_mcp']['default'] is False
 
     body = json.dumps({'jsonrpc': '2.0', 'method': 'ping'}).encode('utf-8')
     fake_stdin = SimpleNamespace(
@@ -1029,7 +1179,9 @@ async def test_mcp_tool_definitions_and_stdio_dispatch(tmp_path: Path, monkeypat
     assert b'"ok": true' in written
     monkeypatch.setattr(mcp.sys, 'stdin', SimpleNamespace(buffer=io.BytesIO()))
     assert mcp._read_message() is None
-    monkeypatch.setattr(mcp.sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(b'Content-Length: 1\r\n\r\n')))
+    monkeypatch.setattr(
+        mcp.sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(b'Content-Length: 1\r\n\r\n'))
+    )
     assert mcp._read_message() is None
 
     fake_engine = FakeEngine()
@@ -1038,27 +1190,106 @@ async def test_mcp_tool_definitions_and_stdio_dispatch(tmp_path: Path, monkeypat
         return FakeContext(fake_engine)
 
     monkeypatch.setattr(mcp.MemoryEngine, 'open', fake_open)
-    monkeypatch.setattr(mcp.MemoryEngine, 'choose_backend', classmethod(lambda cls, root, requested_backend=None: requested_backend or BackendType.kuzu))
-    monkeypatch.setattr(mcp.MemoryEngine, 'default_runtime_config', classmethod(lambda cls, root, backend=None: RuntimeConfig(project_name='demo', project_id='pid', database_path='.graphiti/memory.kuzu', backend=backend or BackendType.kuzu)))
-    monkeypatch.setattr(mcp.MemoryEngine, 'init_project', staticmethod(lambda root, force=False, config=None: (build_project_paths(root), config or RuntimeConfig(project_name='demo', project_id='pid', database_path='.graphiti/memory.kuzu'))))
-    monkeypatch.setattr(mcp.MemoryEngine, 'apply_managed_agents_block', staticmethod(lambda root: root / 'AGENTS.md'))
-    monkeypatch.setattr(mcp.MemoryEngine, 'detect_onboarding_state', classmethod(lambda cls, root, history_days=90, requested_backend=None: {'configured': True, 'backend': (requested_backend or BackendType.kuzu).value, 'history_sessions_detected': 0, 'mcp_command': 'graphiti mcp --transport stdio'}))
-
-    init_payload = json.loads(await mcp._call_tool(tmp_path, 'init_project', {'apply_agents': True}))
+    monkeypatch.setattr(
+        mcp.MemoryEngine,
+        'choose_backend',
+        classmethod(
+            lambda cls, root, requested_backend=None: requested_backend or BackendType.kuzu
+        ),
+    )
+    monkeypatch.setattr(
+        mcp.MemoryEngine,
+        'default_runtime_config',
+        classmethod(
+            lambda cls, root, backend=None: RuntimeConfig(
+                project_name='demo',
+                project_id='pid',
+                database_path='.graphiti/memory.kuzu',
+                backend=backend or BackendType.kuzu,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        mcp.MemoryEngine,
+        'init_project',
+        staticmethod(
+            lambda root, force=False, config=None: (
+                build_project_paths(root),
+                config
+                or RuntimeConfig(
+                    project_name='demo', project_id='pid', database_path='.graphiti/memory.kuzu'
+                ),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        mcp.MemoryEngine,
+        'apply_managed_agents_block',
+        staticmethod(lambda root: root / 'AGENTS.md'),
+    )
+    monkeypatch.setattr(
+        mcp.MemoryEngine,
+        'detect_onboarding_state',
+        classmethod(
+            lambda cls, root, history_days=90, requested_backend=None: {
+                'configured': True,
+                'backend': (requested_backend or BackendType.kuzu).value,
+                'history_sessions_detected': 0,
+                'mcp_command': 'graphiti mcp --transport stdio',
+                'codex_mcp_installed': True,
+            }
+        ),
+    )
+    init_payload = json.loads(
+        await mcp._call_tool(tmp_path, 'init_project', {'apply_agents': True})
+    )
     assert init_payload['agents_updated'] is True
     assert init_payload['configured_backend'] == 'kuzu'
+    assert 'codex_mcp_updated' in init_payload
+    assert init_payload['codex_mcp_updated'] is False
+
+    monkeypatch.setattr(
+        mcp,
+        'install_codex_mcp_server',
+        lambda **kwargs: (tmp_path / '.codex' / 'config.toml', True),
+    )
+    init_payload = json.loads(
+        await mcp._call_tool(tmp_path, 'init_project', {'apply_agents': True, 'install_mcp': True})
+    )
+    assert init_payload['codex_mcp_updated'] is True
 
     apply_payload = json.loads(await mcp._call_tool(tmp_path, 'apply_agents_instructions', {}))
     assert apply_payload['agents_path'].endswith('AGENTS.md')
 
-    assert json.loads(await mcp._call_tool(tmp_path, 'list_history_sessions', {'limit': 2}))[0]['limit'] == 2
-    assert json.loads(await mcp._call_tool(tmp_path, 'read_history_session', {'session_id': 'session-1'}))['session_id'] == 'session-1'
-    assert json.loads(await mcp._call_tool(tmp_path, 'import_history_sessions', {'session_ids': ['s1']}))[0]['session_id'] == 's1'
-    assert json.loads(
-        await mcp._call_tool(tmp_path, 'remember', {'kind': 'decision', 'summary': 'Prefer Y'})
-    )['uuid'] == 'memory-1'
+    assert (
+        json.loads(await mcp._call_tool(tmp_path, 'list_history_sessions', {'limit': 2}))[0][
+            'limit'
+        ]
+        == 2
+    )
+    assert (
+        json.loads(
+            await mcp._call_tool(tmp_path, 'read_history_session', {'session_id': 'session-1'})
+        )['session_id']
+        == 'session-1'
+    )
+    assert (
+        json.loads(
+            await mcp._call_tool(tmp_path, 'import_history_sessions', {'session_ids': ['s1']})
+        )[0]['session_id']
+        == 's1'
+    )
+    assert (
+        json.loads(
+            await mcp._call_tool(tmp_path, 'remember', {'kind': 'decision', 'summary': 'Prefer Y'})
+        )['uuid']
+        == 'memory-1'
+    )
     assert await mcp._call_tool(tmp_path, 'recall', {'query': 'task'}) == 'recall:task:8'
-    assert json.loads(await mcp._call_tool(tmp_path, 'index', {'changed_only': False}))[0]['artifact'] == 'README.md'
+    assert (
+        json.loads(await mcp._call_tool(tmp_path, 'index', {'changed_only': False}))[0]['artifact']
+        == 'README.md'
+    )
     assert await mcp._call_tool(tmp_path, 'doctor', {}) == 'doctor-ok'
 
     with pytest.raises(ValueError):
@@ -1176,7 +1407,9 @@ async def test_kuzu_driver_query_and_session_branches(monkeypatch: pytest.Monkey
     assert result == []
 
     logged: list[str] = []
-    monkeypatch.setattr('graphiti_core.driver.kuzu_driver.logger.error', lambda message: logged.append(message))
+    monkeypatch.setattr(
+        'graphiti_core.driver.kuzu_driver.logger.error', lambda message: logged.append(message)
+    )
 
     def raise_exists(query, params):
         raise RuntimeError('index already exists')

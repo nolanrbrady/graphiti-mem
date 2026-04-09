@@ -5,7 +5,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from .config import apply_agent_instructions, detect_project_root
+from .config import apply_agent_instructions, detect_project_root, install_codex_mcp_server
 from .engine import MemoryEngine
 from .mcp import run_stdio_mcp_server
 from .models import BackendType, MemoryKind
@@ -37,6 +37,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     init_parser.add_argument(
         '--no-apply-agents', action='store_true', help='Do not modify AGENTS.md during setup'
+    )
+    init_parser.add_argument(
+        '--install-mcp',
+        action='store_true',
+        help='Install Graphiti into the local Codex MCP config',
+    )
+    init_parser.add_argument(
+        '--no-install-mcp',
+        action='store_true',
+        help='Do not modify the local Codex MCP config during setup',
     )
     init_parser.add_argument(
         '--backend',
@@ -137,6 +147,13 @@ async def _run_init(args: argparse.Namespace) -> int:
             interactive=interactive,
         )
 
+    if args.install_mcp:
+        install_mcp = True
+    elif args.no_install_mcp:
+        install_mcp = False
+    else:
+        install_mcp = False
+
     if args.import_history:
         import_history = history_count > 0
     elif args.skip_history or history_count == 0 or args.yes or not interactive:
@@ -150,6 +167,12 @@ async def _run_init(args: argparse.Namespace) -> int:
         )
 
     agents_path = apply_agent_instructions(paths.root) if apply_agents else None
+    codex_config = None
+    codex_config_changed = False
+    if install_mcp:
+        codex_config, codex_config_changed = install_codex_mcp_server(
+            python_executable=sys.executable
+        )
     imported: list[dict[str, str]] = []
 
     async with await MemoryEngine.open(paths.root) as engine:
@@ -184,6 +207,11 @@ async def _run_init(args: argparse.Namespace) -> int:
         print(
             f'- Left AGENTS.md unchanged; fallback instructions are in {paths.agent_instructions_path}'
         )
+    if codex_config is not None:
+        state = 'updated' if codex_config_changed else 'already current'
+        print(f'- Codex MCP config: {codex_config} ({state})')
+    else:
+        print('- Left Codex MCP config unchanged (use `--install-mcp` to register globally)')
     print('')
     print('Codex MCP command:')
     print('- `graphiti mcp --transport stdio`')

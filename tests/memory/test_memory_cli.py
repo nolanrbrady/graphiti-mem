@@ -95,9 +95,7 @@ def write_codex_history(
         """
     )
     base_timestamp = (datetime.now(timezone.utc) - timedelta(days=age_days)).timestamp()
-    timestamp = (
-        int(base_timestamp) if timestamp_unit == 'seconds' else int(base_timestamp * 1000)
-    )
+    timestamp = int(base_timestamp) if timestamp_unit == 'seconds' else int(base_timestamp * 1000)
     connection.execute(
         """
         INSERT OR REPLACE INTO threads (
@@ -200,25 +198,53 @@ async def test_init_creates_local_state(tmp_path: Path) -> None:
     assert paths.index_state_path.exists()
     assert paths.agent_instructions_path.exists()
     assert config.project_name == tmp_path.name
-    assert 'graphiti recall "<current task>"' in paths.agent_instructions_path.read_text()
-    assert 'init_project' in paths.agent_instructions_path.read_text()
+    instructions = paths.agent_instructions_path.read_text()
+    assert 'graphiti recall "<current task>"' in instructions
+    assert 'init_project' in instructions
+    assert 'At the start of each new task or after a context switch' in instructions
+    assert 'When you choose an approach, confirm a constraint, discover a pitfall' in instructions
 
 
 def test_cli_init_applies_managed_agents_block(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     write_project_files(tmp_path)
+    fake_home = tmp_path / 'home'
+    monkeypatch.setenv('HOME', str(fake_home))
     monkeypatch.chdir(tmp_path)
 
     rc = main(['init', '--yes', '--skip-history', '--apply-agents'])
     out = capsys.readouterr().out
     agents_text = (tmp_path / 'AGENTS.md').read_text()
+    codex_config = fake_home / '.codex' / 'config.toml'
 
     assert rc == 0
     assert 'Initialized Graphiti local memory' in out
     assert 'graphiti mcp --transport stdio' in out
+    assert 'Left Codex MCP config unchanged' in out
     assert GRAPHITI_BLOCK_START in agents_text
     assert GRAPHITI_BLOCK_END in agents_text
+    assert 'At the start of each new task or after a context switch' in agents_text
+    assert not codex_config.exists()
+
+
+def test_cli_init_can_install_codex_mcp_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    write_project_files(tmp_path)
+    fake_home = tmp_path / 'home'
+    monkeypatch.setenv('HOME', str(fake_home))
+    monkeypatch.chdir(tmp_path)
+
+    rc = main(['init', '--yes', '--skip-history', '--apply-agents', '--install-mcp'])
+    out = capsys.readouterr().out
+    codex_config = fake_home / '.codex' / 'config.toml'
+
+    assert rc == 0
+    assert 'Codex MCP config:' in out
+    assert codex_config.exists()
+    assert '[mcp_servers.graphiti]' in codex_config.read_text()
+    assert 'graphiti_core.memory.cli' in codex_config.read_text()
 
 
 def test_cli_init_can_leave_agents_unchanged(
@@ -226,21 +252,27 @@ def test_cli_init_can_leave_agents_unchanged(
 ) -> None:
     write_project_files(tmp_path)
     original_agents = (tmp_path / 'AGENTS.md').read_text()
+    fake_home = tmp_path / 'home'
+    monkeypatch.setenv('HOME', str(fake_home))
     monkeypatch.chdir(tmp_path)
 
-    rc = main(['init', '--yes', '--skip-history', '--no-apply-agents'])
+    rc = main(['init', '--yes', '--skip-history', '--no-apply-agents', '--no-install-mcp'])
     out = capsys.readouterr().out
 
     assert rc == 0
     assert 'Left AGENTS.md unchanged' in out
+    assert 'Left Codex MCP config unchanged' in out
     assert (tmp_path / 'AGENTS.md').read_text() == original_agents
     assert (tmp_path / '.graphiti' / 'agent_instructions.md').exists()
+    assert not (fake_home / '.codex' / 'config.toml').exists()
 
 
 def test_cli_init_is_idempotent_for_managed_agents_block(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     write_project_files(tmp_path)
+    fake_home = tmp_path / 'home'
+    monkeypatch.setenv('HOME', str(fake_home))
     monkeypatch.chdir(tmp_path)
 
     assert main(['init', '--yes', '--skip-history', '--apply-agents']) == 0
@@ -249,6 +281,7 @@ def test_cli_init_is_idempotent_for_managed_agents_block(
     agents_text = (tmp_path / 'AGENTS.md').read_text()
     assert agents_text.count(GRAPHITI_BLOCK_START) == 1
     assert 'Prefer concise output.' in agents_text
+    assert not (fake_home / '.codex' / 'config.toml').exists()
 
 
 @pytest.mark.asyncio
@@ -541,7 +574,9 @@ def test_mcp_stdio_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 @pytest.mark.asyncio
-async def test_mcp_init_project_and_apply_agents(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_mcp_init_project_and_apply_agents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     write_project_files(tmp_path)
     fake_home = tmp_path / 'home'
     monkeypatch.setenv('HOME', str(fake_home))
@@ -558,11 +593,15 @@ async def test_mcp_init_project_and_apply_agents(tmp_path: Path, monkeypatch: py
     assert payload['configured_backend'] in {'kuzu', 'neo4j'}
     assert payload['agents_updated'] is True
     assert payload['mcp_command'] == 'graphiti mcp --transport stdio'
+    assert payload['codex_mcp_installed'] is False
     assert GRAPHITI_BLOCK_START in (tmp_path / 'AGENTS.md').read_text()
+    assert not (fake_home / '.codex' / 'config.toml').exists()
 
 
 @pytest.mark.asyncio
-async def test_mcp_history_discovery_read_and_import(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_mcp_history_discovery_read_and_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     write_project_files(tmp_path)
     fake_home = tmp_path / 'home'
     monkeypatch.setenv('HOME', str(fake_home))

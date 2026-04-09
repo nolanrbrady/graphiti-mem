@@ -60,6 +60,7 @@ graphiti init
 ```
 
 `graphiti init` now acts as a local development onboarding flow. It creates `.graphiti/`, detects project-local Codex or Claude transcript history from disk, can optionally register those sessions as source episodes, and can update `AGENTS.md` with a managed Graphiti block.
+If you want Codex to know about Graphiti globally, `graphiti init --install-mcp` installs a `graphiti` MCP server entry into `~/.codex/config.toml` using the current Python executable.
 
 Store a durable memory:
 
@@ -120,6 +121,7 @@ Recommended Codex usage:
 - let the agent inspect prior local sessions with `discover_history`, `list_history_sessions`, and `read_history_session`
 - let the agent write curated durable memory through `store_memory`
 - use the CLI only as a local dev and smoke-test path
+- keep the managed `AGENTS.md` block applied so explicit recall and write triggers stay visible to the agent
 
 ## Local State
 
@@ -131,6 +133,7 @@ Each project gets its own memory directory:
 - `.graphiti/agent_instructions.md`
 
 `graphiti init` writes fallback agent instructions under `.graphiti/agent_instructions.md` and can apply a managed Graphiti block directly into `AGENTS.md`.
+That managed block now includes concrete recall triggers and durable-memory write triggers so the agent is nudged to use Graphiti proactively.
 
 For normal Codex usage, prefer the MCP server and let the agent handle reasoning, summarization, and memory curation. Graphiti is responsible for local storage, provenance, retrieval, indexing, and managed project state.
 
