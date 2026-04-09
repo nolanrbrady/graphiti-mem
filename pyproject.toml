@@ -1,0 +1,84 @@
+[project]
+name = "graphiti-core"
+description = "Project-local agent memory for coding workflows"
+version = "0.28.2"
+authors = [
+    { name = "Paul Paliychuk", email = "paul@getzep.com" },
+    { name = "Preston Rasmussen", email = "preston@getzep.com" },
+    { name = "Daniel Chalef", email = "daniel@getzep.com" },
+]
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10,<4"
+dependencies = [
+    "pydantic>=2.11.5",
+    "kuzu>=0.11.3",
+    "openai>=1.91.0",
+    "tenacity>=9.0.0",
+    "numpy>=1.0.0",
+    "python-dotenv>=1.0.1"
+]
+
+[project.scripts]
+graphiti = "graphiti_core.memory.cli:main"
+
+[project.urls]
+Homepage = "https://help.getzep.com/graphiti/graphiti/overview"
+Repository = "https://github.com/getzep/graphiti"
+
+[project.optional-dependencies]
+neo4j = ["neo4j>=5.28.0"]
+tracing = ["opentelemetry-api>=1.20.0", "opentelemetry-sdk>=1.20.0"]
+dev = [
+    "pyright>=1.1.404",
+    "kuzu>=0.11.3",
+    "neo4j>=5.28.0",
+    "ipykernel>=6.29.5",
+    "jupyterlab>=4.2.4",
+    "pytest>=8.3.3",
+    "pytest-asyncio>=0.24.0",
+    "pytest-xdist>=3.6.1",
+    "ruff>=0.7.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests/memory"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    # pycodestyle
+    "E",
+    # Pyflakes
+    "F",
+    # pyupgrade
+    "UP",
+    # flake8-bugbear
+    "B",
+    # flake8-simplify
+    "SIM",
+    # isort
+    "I",
+]
+ignore = ["E501"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# Required by Pydantic on Python < 3.12
+"typing.TypedDict".msg = "Use typing_extensions.TypedDict instead."
+
+[tool.ruff.format]
+quote-style = "single"
+indent-style = "space"
+docstring-code-format = true
+
+[tool.pyright]
+include = ["graphiti_core"]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
