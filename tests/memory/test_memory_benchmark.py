@@ -254,11 +254,13 @@ def test_multi_hop_trace_candidate_ids_prioritize_selected_thread_and_artifact_s
         [selected_doc, selected_pattern, leftover_thread, leftover_artifact],
     )
 
-    assert candidate_ids[:4] == [
+    assert candidate_ids[:6] == [
         'thread:Autoresearch reward loop',
         'artifact:docs/benchmarking.md',
+        'memory:pattern:pair-naive-source-scan-control-against-graphiti-recall-treatment',
+        'memory:index_artifact:the-benchmark-uses-paired-execution',
+        'session:session-benchmark-loop',
         'thread:Pattern Y migration',
-        'artifact:README.md',
     ]
 
 
