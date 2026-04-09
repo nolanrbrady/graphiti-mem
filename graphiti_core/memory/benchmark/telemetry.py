@@ -4,7 +4,6 @@ import json
 import sqlite3
 from pathlib import Path
 
-
 SEARCH_TOOL_NAMES = {'exec_command'}
 SEARCH_COMMAND_MARKERS = (
     'rg ',
