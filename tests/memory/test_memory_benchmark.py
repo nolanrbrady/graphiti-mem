@@ -23,6 +23,7 @@ from graphiti_core.memory.benchmark.models import (
     BenchmarkTaskType,
 )
 from graphiti_core.memory.benchmark.runner import (
+    _fit_sections_to_budget,
     _history_trace_candidate_ids,
     _memory_candidate_ids,
     _multi_hop_trace_candidate_ids,
@@ -249,6 +250,29 @@ def test_multi_hop_trace_candidate_ids_prioritize_selected_thread_and_artifact_s
         'artifact:docs/benchmarking.md',
         'artifact:README.md',
     ]
+
+
+def test_fit_sections_to_budget_keeps_compact_first_entry_when_nothing_fits() -> None:
+    context, selected_ids, provenance_ids = _fit_sections_to_budget(
+        [
+            (
+                'Supporting Artifacts',
+                [
+                    (
+                        '- AGENTS.md | provenance=artifact:AGENTS.md | snippet=Prefer concise evidence-first answers for tight benchmark budgets.',
+                        'artifact:AGENTS.md',
+                        ['artifact:AGENTS.md'],
+                    )
+                ],
+            )
+        ],
+        60,
+    )
+
+    assert context.startswith('- AGENTS.md | provenance=artifact:AGENTS.md')
+    assert context.endswith('...')
+    assert selected_ids == ['artifact:AGENTS.md']
+    assert provenance_ids == ['artifact:AGENTS.md']
 
 
 def test_telemetry_rollout_and_sqlite_metrics(tmp_path: Path) -> None:
