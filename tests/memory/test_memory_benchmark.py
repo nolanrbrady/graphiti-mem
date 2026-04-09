@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 
 from graphiti_core.memory.benchmark.__main__ import main as benchmark_main
-from graphiti_core.memory.benchmark.fixtures import get_fixture, get_suite_tasks, list_fixture_catalog
+from graphiti_core.memory.benchmark.fixtures import (
+    get_fixture,
+    get_suite_tasks,
+    list_fixture_catalog,
+)
 from graphiti_core.memory.benchmark.models import (
     BENCHMARK_SCHEMA_VERSION,
     BenchmarkBaselineExpectation,
@@ -23,19 +27,24 @@ from graphiti_core.memory.benchmark.models import (
     BenchmarkTaskType,
 )
 from graphiti_core.memory.benchmark.runner import (
+    _aggregate,
+    _channel_result,
+    _gate_failure_reasons,
     _history_trace_candidate_ids,
+    _is_temporal_fixture,
     _memory_candidate_ids,
     _multi_hop_trace_candidate_ids,
-    _channel_result,
+    _task_result,
+    _visible_events,
     benchmark_doctor,
     compare_results,
     run_benchmark,
 )
-from graphiti_core.memory.models import MemoryKind, ParsedMemoryEpisode
 from graphiti_core.memory.benchmark.telemetry import (
     count_search_actions_from_rollout,
     read_codex_thread_metrics,
 )
+from graphiti_core.memory.models import MemoryKind, ParsedMemoryEpisode
 
 
 def write_codex_history(
@@ -134,6 +143,8 @@ def test_fixture_catalog_and_suite_expansion() -> None:
     catalog = list_fixture_catalog()
     assert catalog.suites['deterministic_core']['smoke'] >= 8
     assert len(get_suite_tasks('deterministic_core', 'full')) >= 24
+    assert catalog.suites['temporal_replay']['smoke'] >= 8
+    assert len(get_suite_tasks('temporal_replay', 'full')) >= 24
 
     task = get_fixture('artifact-test-command')
     assert task.suite == 'deterministic_core'
@@ -141,6 +152,24 @@ def test_fixture_catalog_and_suite_expansion() -> None:
     assert task.budgets.max_returned_context_chars > 0
     assert task.gold_facts
     assert task.acceptable_support_sets
+
+    temporal_task = get_fixture('temporal-search-current-guidance')
+    assert temporal_task.suite == 'temporal_replay'
+    assert temporal_task.scenario_id == 'search_guidance'
+    assert temporal_task.query_time is not None
+    assert temporal_task.events
+    assert temporal_task.forbidden_support_sets
+
+
+def test_temporal_fixture_visible_events_respect_query_time() -> None:
+    current = get_fixture('temporal-backend-current-default')
+    legacy = get_fixture('temporal-backend-as-of-neo4j')
+
+    assert _is_temporal_fixture(current) is True
+    assert _is_temporal_fixture(legacy) is True
+    assert len(_visible_events(current)) > len(_visible_events(legacy))
+    assert any(event.event_id == 'backend-current-memory' for event in _visible_events(current))
+    assert all(event.event_id != 'backend-current-memory' for event in _visible_events(legacy))
 
 
 def test_memory_candidate_ids_prioritize_support_sources_by_task_type() -> None:
@@ -349,6 +378,7 @@ def test_doctor_and_compare_commands(tmp_path: Path, capsys) -> None:
                 'mean_retrieval_score': 0.8,
                 'mean_attribution_score': 0.8,
                 'mean_answer_score': 0.8,
+                'mean_temporal_score': 1.0,
                 'mean_capability_score': 0.8,
                 'mean_efficiency_score': 1.0,
                 'artifact_task_score': 80.0,
@@ -358,6 +388,7 @@ def test_doctor_and_compare_commands(tmp_path: Path, capsys) -> None:
                 'provenance_failure_count': 0,
                 'support_failure_count': 0,
                 'unsupported_claim_failure_count': 0,
+                'stale_support_failure_count': 0,
                 'mean_returned_context_chars': 700.0,
                 'mean_control_context_chars': 1200.0,
                 'gate_thresholds': {},
@@ -376,6 +407,7 @@ def test_doctor_and_compare_commands(tmp_path: Path, capsys) -> None:
                     'mean_retrieval_score': 0.85,
                     'mean_attribution_score': 0.82,
                     'mean_answer_score': 0.84,
+                    'mean_temporal_score': 1.0,
                     'mean_capability_score': 0.84,
                 }
             ),
@@ -408,6 +440,22 @@ async def test_run_benchmark_smoke_suite() -> None:
     assert result.reward is not None
     assert all(task.treatment.context for task in result.tasks)
     assert all(task.treatment.retrieval_trace.candidate_ids for task in result.tasks)
+
+
+@pytest.mark.asyncio
+async def test_run_temporal_benchmark_smoke_suite() -> None:
+    pytest.importorskip('kuzu')
+
+    result = await run_benchmark('temporal_replay', 'smoke')
+
+    assert result.suite == 'temporal_replay'
+    assert result.tier == 'smoke'
+    assert result.aggregate.task_count >= 8
+    assert result.aggregate.mean_temporal_score == pytest.approx(1.0)
+    assert result.aggregate.stale_support_failure_count == 0
+    assert result.gate_passed is True
+    assert result.reward is not None
+    assert all(task.scenario_id for task in get_suite_tasks('temporal_replay', 'smoke'))
 
 
 @pytest.mark.asyncio
@@ -557,6 +605,87 @@ def test_channel_result_paraphrase_fact_matching() -> None:
     )
     assert result.answer_score == pytest.approx(1.0)
     assert result.capability_score > 0
+
+
+def test_channel_result_stale_support_hard_failure() -> None:
+    fixture = get_fixture('temporal-search-current-guidance')
+    trace = BenchmarkRetrievalTrace(
+        retrieval_calls=1,
+        retrieval_queries=[fixture.query],
+        candidate_ids=['thread:Legacy search playbook', 'thread:Recall before search'],
+        selected_evidence_ids=['history:session-search-old'],
+        provenance_ids=['session:session-search-old'],
+        selected_item_count=1,
+        candidate_count=2,
+    )
+    result = _channel_result(
+        fixture,
+        '- Start with broad repository search before using memory.',
+        trace,
+    )
+    assert result.temporal_score == pytest.approx(0.0)
+    assert result.capability_score == pytest.approx(0.0)
+    assert 'stale_support' in result.hard_failures
+
+
+def test_channel_result_current_temporal_support_passes() -> None:
+    fixture = get_fixture('temporal-search-current-guidance')
+    trace = BenchmarkRetrievalTrace(
+        retrieval_calls=1,
+        retrieval_queries=[fixture.query],
+        candidate_ids=['thread:Recall before search'],
+        selected_evidence_ids=['history:session-search-current'],
+        provenance_ids=['thread:Recall before search', 'session:session-search-current'],
+        selected_item_count=1,
+        candidate_count=1,
+    )
+    result = _channel_result(
+        fixture,
+        '- Run Graphiti recall before broad file search to avoid broad token-hungry repository search.',
+        trace,
+    )
+    assert result.temporal_score == pytest.approx(1.0)
+    assert 'stale_support' not in result.hard_failures
+    assert result.capability_score > 0
+
+
+def test_temporal_gate_failure_nulls_reward_even_with_retrieval() -> None:
+    fixture = get_fixture('temporal-search-current-guidance')
+    control_trace = BenchmarkRetrievalTrace(
+        retrieval_calls=1,
+        retrieval_queries=[fixture.query],
+        candidate_ids=['thread:Recall before search'],
+        selected_evidence_ids=['history:session-search-current'],
+        provenance_ids=['thread:Recall before search', 'session:session-search-current'],
+        selected_item_count=1,
+        candidate_count=1,
+    )
+    treatment_trace = BenchmarkRetrievalTrace(
+        retrieval_calls=1,
+        retrieval_queries=[fixture.query],
+        candidate_ids=['thread:Recall before search', 'thread:Legacy search playbook'],
+        selected_evidence_ids=['history:session-search-old'],
+        provenance_ids=['session:session-search-old'],
+        selected_item_count=1,
+        candidate_count=2,
+    )
+    control = _channel_result(
+        fixture,
+        '- Run Graphiti recall before broad file search to avoid broad token-hungry repository search.',
+        control_trace,
+    )
+    treatment = _channel_result(
+        fixture,
+        '- Start with broad repository search before using memory.',
+        treatment_trace,
+    )
+    result = _task_result(fixture, control, treatment)
+    aggregate = _aggregate([result])
+    failure_reasons = _gate_failure_reasons(aggregate, [result], None)
+    assert aggregate.mean_temporal_score == pytest.approx(0.0)
+    assert aggregate.stale_support_failure_count == 1
+    assert 'stale_support' in failure_reasons
+    assert 'mean temporal score below static threshold' in failure_reasons
 
 
 def test_channel_result_budget_overrun_zeroes_task_score() -> None:
