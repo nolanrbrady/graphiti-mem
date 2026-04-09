@@ -132,7 +132,6 @@ async def _run_init(args: argparse.Namespace) -> int:
 
     history_discovery = MemoryEngine.discover_history(paths.root, history_days=args.history_days)
     history_count = history_discovery.total_sessions
-    large_history = history_count > MemoryEngine.bootstrap_warning_threshold()
 
     if args.apply_agents:
         apply_agents = True
@@ -154,15 +153,15 @@ async def _run_init(args: argparse.Namespace) -> int:
     else:
         install_mcp = False
 
-    if args.import_history:
-        import_history = history_count > 0
-    elif args.skip_history or history_count == 0 or args.yes or not interactive:
+    if args.skip_history or history_count == 0:
         import_history = False
+    elif args.import_history or args.yes or not interactive:
+        import_history = history_count > 0
     else:
         import_history = _prompt_yes_no(
-            f'Import {history_count} matching Codex/Claude project sessions as source evidence now? '
-            'This stores raw transcript episodes only; the agent should decide what durable memory to write.',
-            default=False if not large_history else False,
+            f'Bootstrap {history_count} matching Codex/Claude project sessions into durable memory now? '
+            'This stores source evidence and distills durable project memory from prior sessions.',
+            default=True,
             interactive=interactive,
         )
 
@@ -191,14 +190,13 @@ async def _run_init(args: argparse.Namespace) -> int:
         print(f'- Matching transcript sessions detected: {history_count}')
         if imported:
             print(f'- Imported transcript source sessions: {len(imported)}')
-        elif import_history:
-            print('- Imported transcript source sessions: 0 (already imported)')
-        elif large_history and not interactive and not args.import_history:
             print(
-                '- Transcript source import skipped by default; use `--import-history` or MCP tools if you want to register prior sessions'
+                f'- Distilled durable history memories: {sum(int(item.get("memory_count", "0")) for item in imported)}'
             )
+        elif import_history:
+            print('- Imported transcript source sessions: 0 (already bootstrapped)')
         else:
-            print('- Transcript source import skipped')
+            print('- History bootstrap skipped')
     else:
         print('- Matching transcript sessions detected: 0')
     if agents_path is not None:

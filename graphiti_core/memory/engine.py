@@ -55,6 +55,7 @@ from .models import (
     MEMORY_KIND_PRIORITY,
     BackendType,
     BootstrapDiscovery,
+    BootstrapSession,
     MemoryKind,
     ParsedMemoryEpisode,
     ProjectPaths,
@@ -755,6 +756,117 @@ class MemoryEngine:
             return best_line[:max_len]
         return text.replace('\n', ' ')[:max_len]
 
+    def _history_memory_kind(self, text: str) -> MemoryKind:
+        normalized = text.lower()
+        if any(token in normalized for token in ('must', 'required', 'constraint', 'cannot')):
+            return MemoryKind.constraint
+        if any(token in normalized for token in ('prefer', 'default', 'choose', 'replaced')):
+            return MemoryKind.decision
+        if any(
+            token in normalized
+            for token in ('avoid', 'pitfall', 'failed', 'failure', 'brittle', 'retry', 'retries')
+        ):
+            return MemoryKind.pitfall
+        if any(token in normalized for token in ('run ', 'use ', 'inspect', 'before ', 'after ')):
+            return MemoryKind.workflow
+        if any(token in normalized for token in ('pattern', 'approach', 'strategy')):
+            return MemoryKind.pattern
+        return MemoryKind.implementation_note
+
+    def _first_sentence(self, text: str, fallback: str) -> str:
+        parts = [part.strip() for part in re.split(r'(?<=[.!?])\s+', text.strip()) if part.strip()]
+        if parts:
+            return parts[0][:160]
+        return fallback[:160]
+
+    def _history_session_excerpt(self, session: BootstrapSession) -> tuple[str, str]:
+        user = ''
+        assistant = ''
+        for line in session.content.splitlines():
+            if line.startswith('User: ') and not user:
+                user = line.removeprefix('User: ').strip()
+            elif line.startswith('Assistant: ') and not assistant:
+                assistant = line.removeprefix('Assistant: ').strip()
+            if user and assistant:
+                break
+        return user, assistant
+
+    def _history_memory_candidates(
+        self,
+        session: BootstrapSession,
+        *,
+        max_memories: int = 4,
+    ) -> list[tuple[MemoryKind, str, str]]:
+        user_excerpt, assistant_excerpt = self._history_session_excerpt(session)
+        transcript_lines = [line.strip() for line in session.content.splitlines() if line.strip()]
+        assistant_lines = [
+            line.removeprefix('Assistant: ').strip()
+            for line in transcript_lines
+            if line.startswith('Assistant: ')
+        ]
+        user_lines = [
+            line.removeprefix('User: ').strip()
+            for line in transcript_lines
+            if line.startswith('User: ')
+        ]
+
+        candidate_texts: list[str] = []
+        for line in [*assistant_lines, *user_lines]:
+            normalized = line.lower()
+            if len(line) < 12:
+                continue
+            if any(
+                token in normalized
+                for token in (
+                    'prefer',
+                    'default',
+                    'must',
+                    'required',
+                    'constraint',
+                    'avoid',
+                    'pitfall',
+                    'run ',
+                    'use ',
+                    'before ',
+                    'after ',
+                    'failed',
+                    'failure',
+                    'retry',
+                    'replaced',
+                    'pattern',
+                    'workflow',
+                )
+            ):
+                candidate_texts.append(line)
+
+        if not candidate_texts:
+            candidate_texts.extend([assistant_excerpt, user_excerpt, session.title])
+
+        candidates: list[tuple[MemoryKind, str, str]] = []
+        seen_summaries: set[str] = set()
+        for text in candidate_texts:
+            if not text:
+                continue
+            summary = self._first_sentence(text, session.title)
+            summary_key = summary.lower()
+            if summary_key in seen_summaries:
+                continue
+            seen_summaries.add(summary_key)
+            details_parts = [
+                part
+                for part in (
+                    f'Thread: {session.title}',
+                    f'User context: {user_excerpt}' if user_excerpt else '',
+                    f'Assistant guidance: {text}',
+                )
+                if part
+            ]
+            candidates.append((self._history_memory_kind(text), summary, '\n'.join(details_parts)))
+            if len(candidates) >= max_memories:
+                break
+
+        return candidates
+
     async def recall(self, query: str, limit: int = RECALL_LIMIT) -> str:
         results = await self._search(query, limit=max(limit, DEFAULT_SEARCH_LIMIT))
 
@@ -1093,6 +1205,7 @@ class MemoryEngine:
         session_ids: list[str] | None = None,
         history_days: int = 90,
         discovery: BootstrapDiscovery | None = None,
+        distill_memories: bool = True,
     ) -> list[dict[str, str]]:
         discovery = discovery or self.discover_history(self.project.root, history_days)
         with project_lock(self.lock_path):
@@ -1115,6 +1228,7 @@ class MemoryEngine:
                 await self._delete_episodes(previous.get('memory_episode_uuids', []))
 
                 source_episode_uuids: list[str] = []
+                memory_episode_uuids: list[str] = []
                 session_header = '\n'.join(
                     [
                         f'Source Agent: {session.source_agent}',
@@ -1137,13 +1251,31 @@ class MemoryEngine:
                     )
                     source_episode_uuids.append(episode.uuid)
 
+                if distill_memories:
+                    for kind, summary, details in self._history_memory_candidates(session):
+                        remembered = await self._remember_unlocked(
+                            kind=kind,
+                            summary=summary,
+                            details=details,
+                            source=f'history:{session.source_agent}',
+                            tags=['history_bootstrap', session.source_agent],
+                            provenance={
+                                'Session ID': session.session_id,
+                                'Thread Title': session.title,
+                                'Source Path': session.source_path,
+                                'Captured From': 'history bootstrap distillation',
+                            },
+                            captured_at=session.created_at,
+                        )
+                        memory_episode_uuids.append(remembered['uuid'])
+
                 sessions_state[session.session_id] = {
                     'fingerprint': session.fingerprint,
                     'source_agent': session.source_agent,
                     'thread_title': session.title,
                     'created_at': session.created_at.isoformat(),
                     'source_episode_uuids': source_episode_uuids,
-                    'memory_episode_uuids': [],
+                    'memory_episode_uuids': memory_episode_uuids,
                     'source_path': session.source_path,
                 }
                 imported.append(
@@ -1151,6 +1283,7 @@ class MemoryEngine:
                         'session_id': session.session_id,
                         'source_agent': session.source_agent,
                         'thread_title': session.title,
+                        'memory_count': str(len(memory_episode_uuids)),
                     }
                 )
 
@@ -1183,6 +1316,10 @@ class MemoryEngine:
         artifact_count = len(state.get('artifacts', {}))
         history_state = state.get('history_bootstrap', {})
         imported_session_count = len(history_state.get('sessions', {}))
+        imported_memory_count = sum(
+            len(session.get('memory_episode_uuids', []))
+            for session in history_state.get('sessions', {}).values()
+        )
         structured_status = (
             'enabled'
             if self.structured_memory_enabled
@@ -1202,6 +1339,7 @@ class MemoryEngine:
             f'Episodes: {episode_count}',
             f'Indexed artifacts: {artifact_count}',
             f'History bootstrap sessions: {imported_session_count}',
+            f'History bootstrap memories: {imported_memory_count}',
             f'Last bootstrap: {history_state.get("last_bootstrap_at", "") or "not run"}',
             f'Agent instructions: {self.project.agent_instructions_path}',
         ]

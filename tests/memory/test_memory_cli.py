@@ -414,18 +414,21 @@ def test_init_bootstraps_recent_project_codex_history(
         cwd=other_project,
     )
 
-    assert main(['init', '--yes', '--import-history', '--apply-agents']) == 0
+    assert main(['init', '--yes', '--apply-agents']) == 0
 
     async def _assert_history() -> None:
         async with await MemoryEngine.open(tmp_path) as engine:
             doctor = await engine.doctor()
             sessions = engine.list_history_sessions(history_days=90)
             session = engine.read_history_session('recent-project', history_days=90, max_chars=200)
+            recall = await engine.recall('pattern Y retries')
         assert any(item['session_id'] == 'recent-project' for item in sessions)
         assert 'Prefer pattern Y over pattern X because it avoids retries.' in str(
             session['content']
         )
         assert 'History bootstrap sessions: 1' in doctor
+        assert 'History bootstrap memories:' in doctor
+        assert 'Prefer pattern Y over pattern X' in recall or 'Relevant Decisions' in recall
 
     asyncio.run(_assert_history())
 
@@ -449,7 +452,7 @@ def test_init_bootstraps_codex_history_with_seconds_timestamp(
         timestamp_unit='seconds',
     )
 
-    assert main(['init', '--yes', '--import-history', '--apply-agents']) == 0
+    assert main(['init', '--yes', '--apply-agents']) == 0
 
     async def _assert_history() -> None:
         async with await MemoryEngine.open(tmp_path) as engine:
@@ -457,6 +460,7 @@ def test_init_bootstraps_codex_history_with_seconds_timestamp(
             sessions = engine.list_history_sessions(history_days=90)
         assert any(item['session_id'] == 'seconds-timestamp' for item in sessions)
         assert 'History bootstrap sessions: 1' in doctor
+        assert 'History bootstrap memories:' in doctor
 
     asyncio.run(_assert_history())
 
@@ -477,15 +481,17 @@ def test_init_bootstraps_claude_history_and_ignores_noise(
         assistant_message='Run `make test` before broad code search and keep output concise.',
     )
 
-    assert main(['init', '--yes', '--import-history', '--apply-agents']) == 0
+    assert main(['init', '--yes', '--apply-agents']) == 0
 
     async def _assert_history() -> None:
         async with await MemoryEngine.open(tmp_path) as engine:
             sessions = engine.list_history_sessions(history_days=90)
             session = engine.read_history_session('claude-session', history_days=90, max_chars=200)
+            recall = await engine.recall('make test broad code search')
         assert any(item['session_id'] == 'claude-session' for item in sessions)
         assert 'Run `make test` before broad code search' in str(session['content'])
         assert 'tool_use' not in str(session['content'])
+        assert 'make test' in recall
 
     asyncio.run(_assert_history())
 
@@ -594,6 +600,7 @@ async def test_mcp_init_project_and_apply_agents(
     assert payload['agents_updated'] is True
     assert payload['mcp_command'] == 'graphiti mcp --transport stdio'
     assert payload['codex_mcp_installed'] is False
+    assert payload['history_bootstrapped_sessions'] == 0
     assert GRAPHITI_BLOCK_START in (tmp_path / 'AGENTS.md').read_text()
     assert not (fake_home / '.codex' / 'config.toml').exists()
 
@@ -639,15 +646,13 @@ async def test_mcp_history_discovery_read_and_import(
     assert discovery['history_sessions_detected'] == 1
     assert any(item['session_id'] == 'mcp-codex-session' for item in sessions)
     assert 'Pattern Y replaced pattern X after repeated retries.' in session['content']
-    assert imported == [
-        {
-            'session_id': 'mcp-codex-session',
-            'source_agent': 'codex',
-            'thread_title': 'Codex memory bootstrap',
-        }
-    ]
+    assert imported[0]['session_id'] == 'mcp-codex-session'
+    assert imported[0]['source_agent'] == 'codex'
+    assert imported[0]['thread_title'] == 'Codex memory bootstrap'
+    assert int(imported[0]['memory_count']) >= 1
 
     async with await MemoryEngine.open(tmp_path) as engine:
         doctor = await engine.doctor()
 
     assert 'History bootstrap sessions: 1' in doctor
+    assert 'History bootstrap memories:' in doctor
