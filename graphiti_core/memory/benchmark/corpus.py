@@ -5,13 +5,21 @@ import os
 import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from graphiti_core.memory.models import MemoryKind
-from graphiti_core.memory.models import BootstrapDiscovery, BootstrapSession
+from graphiti_core.memory.models import BootstrapDiscovery, BootstrapSession, MemoryKind
 
-from .models import artifact_source_id, memory_source_id, session_source_id, thread_source_id
+from .models import (
+    BenchmarkScenarioEvent,
+    BenchmarkScenarioEventKind,
+    artifact_source_id,
+    memory_source_id,
+    session_source_id,
+    thread_source_id,
+)
+
+BENCHMARK_NOW = datetime(2026, 4, 9, 12, 0, tzinfo=timezone.utc)
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +29,7 @@ class BenchmarkHistorySession:
     user_message: str
     assistant_message: str
     tokens_used: int
+    created_at: datetime = BENCHMARK_NOW
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +42,7 @@ class BenchmarkMemorySeed:
     thread_title: str
     tags: tuple[str, ...] = ()
     artifact_path: str = ''
+    captured_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +144,7 @@ HISTORY_SESSIONS: tuple[BenchmarkHistorySession, ...] = (
         user_message='Pattern X caused retries during memory ingestion. What should we keep?',
         assistant_message='Prefer pattern Y over pattern X because it keeps ingestion deterministic.',
         tokens_used=1400,
+        created_at=BENCHMARK_NOW - timedelta(days=10),
     ),
     BenchmarkHistorySession(
         session_id='session-search-first',
@@ -141,6 +152,7 @@ HISTORY_SESSIONS: tuple[BenchmarkHistorySession, ...] = (
         user_message='How should agents explore this repo without wasting tokens?',
         assistant_message='Run Graphiti recall before broad file search and keep the returned context concise.',
         tokens_used=1200,
+        created_at=BENCHMARK_NOW - timedelta(days=8),
     ),
     BenchmarkHistorySession(
         session_id='session-history-gap',
@@ -148,6 +160,7 @@ HISTORY_SESSIONS: tuple[BenchmarkHistorySession, ...] = (
         user_message='Is transcript import enough for recall quality?',
         assistant_message='No. Import raw sessions for provenance, then store durable memories for decisions and pitfalls.',
         tokens_used=1350,
+        created_at=BENCHMARK_NOW - timedelta(days=6),
     ),
     BenchmarkHistorySession(
         session_id='session-benchmark-loop',
@@ -155,6 +168,7 @@ HISTORY_SESSIONS: tuple[BenchmarkHistorySession, ...] = (
         user_message='What makes the benchmark safe for unattended optimization?',
         assistant_message='Keep the default suite deterministic, CLI-first, and guarded by hard pass-fail thresholds before reward.',
         tokens_used=1500,
+        created_at=BENCHMARK_NOW - timedelta(days=4),
     ),
     BenchmarkHistorySession(
         session_id='session-search-antipattern',
@@ -162,6 +176,7 @@ HISTORY_SESSIONS: tuple[BenchmarkHistorySession, ...] = (
         user_message='Should the agent start with broad repository search every time?',
         assistant_message='No. That old search-first playbook is stale and wastes tokens when durable memory already covers the task.',
         tokens_used=900,
+        created_at=BENCHMARK_NOW - timedelta(days=2),
     ),
 )
 
@@ -175,6 +190,7 @@ MEMORY_SEEDS: tuple[BenchmarkMemorySeed, ...] = (
         session_id='session-pattern-y',
         thread_title='Pattern Y migration',
         tags=('ingestion', 'determinism'),
+        captured_at=BENCHMARK_NOW - timedelta(days=10),
     ),
     BenchmarkMemorySeed(
         kind=MemoryKind.workflow,
@@ -184,6 +200,7 @@ MEMORY_SEEDS: tuple[BenchmarkMemorySeed, ...] = (
         session_id='session-search-first',
         thread_title='Recall before search',
         tags=('workflow', 'search'),
+        captured_at=BENCHMARK_NOW - timedelta(days=8),
     ),
     BenchmarkMemorySeed(
         kind=MemoryKind.pitfall,
@@ -193,6 +210,7 @@ MEMORY_SEEDS: tuple[BenchmarkMemorySeed, ...] = (
         session_id='session-history-gap',
         thread_title='History import gap',
         tags=('history', 'pitfall'),
+        captured_at=BENCHMARK_NOW - timedelta(days=6),
     ),
     BenchmarkMemorySeed(
         kind=MemoryKind.constraint,
@@ -202,6 +220,7 @@ MEMORY_SEEDS: tuple[BenchmarkMemorySeed, ...] = (
         session_id='session-benchmark-loop',
         thread_title='Autoresearch reward loop',
         tags=('benchmark', 'constraint'),
+        captured_at=BENCHMARK_NOW - timedelta(days=4),
     ),
     BenchmarkMemorySeed(
         kind=MemoryKind.implementation_note,
@@ -211,6 +230,7 @@ MEMORY_SEEDS: tuple[BenchmarkMemorySeed, ...] = (
         session_id='session-benchmark-loop',
         thread_title='Autoresearch reward loop',
         tags=('benchmark', 'reward'),
+        captured_at=BENCHMARK_NOW - timedelta(days=4),
     ),
     BenchmarkMemorySeed(
         kind=MemoryKind.pattern,
@@ -220,6 +240,7 @@ MEMORY_SEEDS: tuple[BenchmarkMemorySeed, ...] = (
         session_id='session-benchmark-loop',
         thread_title='Autoresearch reward loop',
         tags=('benchmark', 'control'),
+        captured_at=BENCHMARK_NOW - timedelta(days=4),
     ),
     BenchmarkMemorySeed(
         kind=MemoryKind.pitfall,
@@ -229,6 +250,7 @@ MEMORY_SEEDS: tuple[BenchmarkMemorySeed, ...] = (
         session_id='session-search-antipattern',
         thread_title='Legacy search playbook',
         tags=('search', 'stale'),
+        captured_at=BENCHMARK_NOW - timedelta(days=2),
     ),
 )
 
@@ -287,6 +309,14 @@ def materialize_project(root: Path) -> list[BaselineSource]:
 
 
 def write_codex_history(home: Path, project_root: Path) -> None:
+    write_codex_history_sessions(home, project_root, HISTORY_SESSIONS)
+
+
+def write_codex_history_sessions(
+    home: Path,
+    project_root: Path,
+    sessions: tuple[BenchmarkHistorySession, ...] | list[BenchmarkHistorySession],
+) -> None:
     codex_dir = home / '.codex'
     session_dir = codex_dir / 'sessions' / '2026' / '04' / '09'
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -325,8 +355,8 @@ def write_codex_history(home: Path, project_root: Path) -> None:
         """
     )
 
-    timestamp = int(datetime.now(timezone.utc).timestamp() * 1000)
-    for session in HISTORY_SESSIONS:
+    for session in sessions:
+        timestamp = int(session.created_at.timestamp() * 1000)
         rollout_path = session_dir / f'rollout-{session.session_id}.jsonl'
         rollout_records = [
             {
@@ -376,6 +406,100 @@ def seeded_memory_provenance(seed: BenchmarkMemorySeed) -> dict[str, str]:
         'Thread Title': seed.thread_title,
         'Captured From': 'benchmark fixture history',
     }
+
+
+def temporal_event_provenance(event: BenchmarkScenarioEvent) -> dict[str, str]:
+    provenance = {'Captured From': f'benchmark replay:{event.kind.value}'}
+    if event.source_agent:
+        provenance['Source Agent'] = event.source_agent
+    if event.session_id:
+        provenance['Session ID'] = event.session_id
+    if event.thread_title:
+        provenance['Thread Title'] = event.thread_title
+    if event.artifact_path:
+        provenance['Artifact Path'] = event.artifact_path
+    return provenance
+
+
+def temporal_event_support_ids(event: BenchmarkScenarioEvent) -> tuple[str, ...]:
+    ids: list[str] = []
+    if event.artifact_path:
+        ids.append(artifact_source_id(event.artifact_path))
+    if event.session_id:
+        ids.append(session_source_id(event.session_id))
+    if event.thread_title:
+        ids.append(thread_source_id(event.thread_title))
+    if event.summary:
+        ids.append(
+            memory_source_id(
+                temporal_event_memory_kind(event).value,
+                event.summary,
+            )
+        )
+    return tuple(dict.fromkeys(identifier for identifier in ids if identifier))
+
+
+def temporal_event_memory_kind(event: BenchmarkScenarioEvent) -> MemoryKind:
+    if event.kind is BenchmarkScenarioEventKind.decision_update:
+        return MemoryKind.decision
+    if event.kind is BenchmarkScenarioEventKind.pitfall_update:
+        return MemoryKind.pitfall
+    if event.kind is BenchmarkScenarioEventKind.constraint_update:
+        return MemoryKind.constraint
+    return event.memory_kind or MemoryKind.implementation_note
+
+
+def temporal_event_to_history_session(event: BenchmarkScenarioEvent) -> BenchmarkHistorySession:
+    return BenchmarkHistorySession(
+        session_id=event.session_id or event.event_id,
+        title=event.thread_title or event.summary or event.event_id,
+        user_message=event.user_message or 'What changed?',
+        assistant_message=event.assistant_message or event.details or event.summary,
+        tokens_used=900,
+        created_at=event.timestamp,
+    )
+
+
+def temporal_event_to_baseline_source(event: BenchmarkScenarioEvent) -> BaselineSource:
+    if event.kind is BenchmarkScenarioEventKind.artifact_snapshot:
+        return BaselineSource(
+            key=f'{event.event_id}:{event.artifact_path}',
+            source_type='artifact',
+            content=event.content,
+            provenance_ids=temporal_event_support_ids(event),
+        )
+
+    if event.kind is BenchmarkScenarioEventKind.history_turn:
+        content = '\n'.join(
+            [
+                event.thread_title or event.summary or event.event_id,
+                f'User: {event.user_message}',
+                f'Assistant: {event.assistant_message}',
+            ]
+        ).strip()
+        return BaselineSource(
+            key=f'history:{event.session_id or event.event_id}',
+            source_type='history',
+            content=content,
+            provenance_ids=temporal_event_support_ids(event),
+        )
+
+    content = '\n'.join(
+        part
+        for part in (
+            event.summary,
+            event.details,
+            event.thread_title,
+            event.session_id,
+        )
+        if part
+    )
+    return BaselineSource(
+        key=f'memory:{event.event_id}',
+        source_type='memory',
+        content=content,
+        provenance_ids=temporal_event_support_ids(event),
+    )
 
 
 def collect_dogfood_artifacts(project_root: Path, max_files: int = 16) -> list[BaselineSource]:
@@ -485,9 +609,92 @@ def distill_history_seeds(
                 session_id=session.session_id,
                 thread_title=session.title[:120],
                 tags=('dogfood', 'history'),
+                captured_at=session.created_at,
             )
         )
     return seeds
+
+
+def build_dogfood_temporal_events(
+    artifact_sources: list[BaselineSource],
+    history_seeds: list[BenchmarkMemorySeed],
+) -> list[BenchmarkScenarioEvent]:
+    events: list[BenchmarkScenarioEvent] = []
+    base_time = BENCHMARK_NOW - timedelta(days=max(2, len(artifact_sources) + len(history_seeds)))
+
+    for index, source in enumerate(artifact_sources, start=1):
+        events.append(
+            BenchmarkScenarioEvent(
+                event_id=f'dogfood-artifact-{index}',
+                timestamp=base_time + timedelta(hours=index),
+                kind=BenchmarkScenarioEventKind.artifact_snapshot,
+                artifact_path=source.key,
+                content=source.content,
+                summary=f'Artifact snapshot for {source.key}',
+                details=source.content[:400],
+            )
+        )
+
+    for index, seed in enumerate(history_seeds, start=1):
+        session_time = seed.captured_at or (base_time + timedelta(days=1, hours=index))
+        events.append(
+            BenchmarkScenarioEvent(
+                event_id=f'dogfood-history-{index}',
+                timestamp=session_time,
+                kind=BenchmarkScenarioEventKind.history_turn,
+                session_id=seed.session_id,
+                thread_title=seed.thread_title,
+                user_message=seed.summary,
+                assistant_message=seed.details,
+                summary=seed.summary,
+                details=seed.details,
+                source_agent=seed.source_agent,
+            )
+        )
+        events.append(
+            BenchmarkScenarioEvent(
+                event_id=f'dogfood-memory-{index}',
+                timestamp=session_time + timedelta(minutes=5),
+                kind=BenchmarkScenarioEventKind.memory_seed,
+                memory_kind=seed.kind,
+                summary=seed.summary,
+                details=seed.details,
+                source_agent=seed.source_agent,
+                session_id=seed.session_id,
+                thread_title=seed.thread_title,
+                tags=list(seed.tags),
+            )
+        )
+
+    stale_candidates = [
+        event
+        for event in events
+        if 'stale' in event.summary.lower()
+        or 'legacy' in event.summary.lower()
+        or 'obsolete' in event.summary.lower()
+        or 'deprecated' in event.summary.lower()
+    ]
+    if stale_candidates and history_seeds:
+        latest = max(
+            history_seeds,
+            key=lambda seed: seed.captured_at or BENCHMARK_NOW,
+        )
+        stale_event = stale_candidates[0]
+        events.append(
+            BenchmarkScenarioEvent(
+                event_id='dogfood-supersession',
+                timestamp=(latest.captured_at or BENCHMARK_NOW) + timedelta(minutes=10),
+                kind=BenchmarkScenarioEventKind.pitfall_update,
+                summary=f'Avoid stale guidance from {stale_event.summary}',
+                details='Newer local history superseded this older guidance.',
+                source_agent=latest.source_agent,
+                session_id=latest.session_id,
+                thread_title=latest.thread_title,
+                supersedes=[stale_event.event_id],
+            )
+        )
+
+    return sorted(events, key=lambda event: (event.timestamp, event.event_id))
 
 
 class HomeOverride:

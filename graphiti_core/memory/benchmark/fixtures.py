@@ -9,6 +9,7 @@ from .models import (
     BenchmarkFactMatch,
     BenchmarkGoldFact,
     BenchmarkHardFailRule,
+    BenchmarkScenarioFixture,
     BenchmarkSuiteCatalog,
     BenchmarkSupportSet,
     BenchmarkTaskFixture,
@@ -103,8 +104,18 @@ def load_fixtures() -> list[BenchmarkTaskFixture]:
     fixtures_dir = resources.files(__package__) / 'fixtures'
     for name in _fixture_resource_names():
         payload = json.loads((fixtures_dir / name).read_text())
+        scenarios = {
+            scenario.scenario_id: scenario
+            for scenario in (
+                BenchmarkScenarioFixture.model_validate(item) for item in payload.get('scenarios', [])
+            )
+        }
         tasks.extend(
-            BenchmarkTaskFixture.model_validate(_normalize_fixture_payload(item))
+            BenchmarkTaskFixture.model_validate(
+                _normalize_fixture_payload(
+                    _attach_scenario_events(item, scenarios),
+                )
+            )
             for item in payload['tasks']
         )
     seen_ids: set[str] = set()
@@ -113,6 +124,23 @@ def load_fixtures() -> list[BenchmarkTaskFixture]:
             raise ValueError(f'duplicate benchmark task id: {task.task_id}')
         seen_ids.add(task.task_id)
     return tasks
+
+
+def _attach_scenario_events(
+    raw_task: dict,
+    scenarios: dict[str, BenchmarkScenarioFixture],
+) -> dict:
+    task = dict(raw_task)
+    scenario_id = task.get('scenario_id', '')
+    if not scenario_id or task.get('events'):
+        return task
+    scenario = scenarios.get(scenario_id)
+    if scenario is None:
+        raise ValueError(f'unknown benchmark scenario id: {scenario_id}')
+    task['events'] = [event.model_dump(mode='json') for event in scenario.events]
+    if not task.get('suite') and scenario.suite:
+        task['suite'] = scenario.suite
+    return task
 
 
 def list_fixture_catalog() -> BenchmarkSuiteCatalog:
@@ -131,10 +159,7 @@ def get_fixture(task_id: str) -> BenchmarkTaskFixture:
 
 
 def get_suite_tasks(suite: str, tier: str) -> list[BenchmarkTaskFixture]:
-    if tier == 'full':
-        tiers = {'smoke', 'full'}
-    else:
-        tiers = {tier}
+    tiers = {'smoke', 'full'} if tier == 'full' else {tier}
     tasks = [task for task in load_fixtures() if task.suite == suite and task.tier in tiers]
     if not tasks:
         raise ValueError(f'no benchmark tasks found for suite={suite!r} tier={tier!r}')

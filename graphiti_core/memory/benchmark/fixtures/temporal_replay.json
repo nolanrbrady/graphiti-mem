@@ -1,0 +1,894 @@
+{
+  "schema_version": "2.1",
+  "scenarios": [
+    {
+      "scenario_id": "search_guidance",
+      "suite": "temporal_replay",
+      "events": [
+        {
+          "event_id": "search-old-artifact",
+          "timestamp": "2026-01-05T09:00:00Z",
+          "kind": "artifact_snapshot",
+          "artifact_path": "docs/legacy-search.md",
+          "content": "# Legacy Search Playbook\n\nStart with broad repository search before using memory. This older workflow is search-first and expensive.\n"
+        },
+        {
+          "event_id": "search-old-history",
+          "timestamp": "2026-01-05T09:30:00Z",
+          "kind": "history_turn",
+          "session_id": "session-search-old",
+          "thread_title": "Legacy search playbook",
+          "user_message": "How should the agent start exploring this repo?",
+          "assistant_message": "Start with broad repository search before using memory. That was the old search-first playbook."
+        },
+        {
+          "event_id": "search-old-memory",
+          "timestamp": "2026-01-05T09:35:00Z",
+          "kind": "memory_seed",
+          "memory_kind": "workflow",
+          "summary": "Start with broad repository search before using memory",
+          "details": "This older workflow was search-first and expensive.",
+          "source_agent": "codex",
+          "session_id": "session-search-old",
+          "thread_title": "Legacy search playbook"
+        },
+        {
+          "event_id": "search-current-artifact",
+          "timestamp": "2026-02-12T11:00:00Z",
+          "kind": "artifact_snapshot",
+          "artifact_path": "AGENTS.md",
+          "content": "# Agent Guidance\n\nRun Graphiti recall before broad file search.\nPrefer concise evidence-first answers.\n"
+        },
+        {
+          "event_id": "search-current-history",
+          "timestamp": "2026-02-12T11:10:00Z",
+          "kind": "history_turn",
+          "session_id": "session-search-current",
+          "thread_title": "Recall before search",
+          "user_message": "What should the agent do before broad file search now?",
+          "assistant_message": "Run Graphiti recall before broad file search so the agent avoids broad token-hungry repository search."
+        },
+        {
+          "event_id": "search-current-memory",
+          "timestamp": "2026-02-12T11:15:00Z",
+          "kind": "decision_update",
+          "summary": "Run Graphiti recall before broad file search",
+          "details": "Use recall first so the agent avoids broad token-hungry repository search.",
+          "source_agent": "codex",
+          "session_id": "session-search-current",
+          "thread_title": "Recall before search",
+          "supersedes": ["search-old-memory", "search-old-history"]
+        },
+        {
+          "event_id": "search-stale-pitfall",
+          "timestamp": "2026-02-12T11:20:00Z",
+          "kind": "pitfall_update",
+          "summary": "Legacy search-first guidance is stale",
+          "details": "Do not start with broad repository search when durable memory already covers the task.",
+          "source_agent": "codex",
+          "session_id": "session-search-current",
+          "thread_title": "Recall before search"
+        }
+      ]
+    },
+    {
+      "scenario_id": "judge_policy",
+      "suite": "temporal_replay",
+      "events": [
+        {
+          "event_id": "judge-old-artifact",
+          "timestamp": "2026-01-08T10:00:00Z",
+          "kind": "artifact_snapshot",
+          "artifact_path": "docs/legacy-judge.md",
+          "content": "# Legacy Judge Notes\n\nUse an external model judge for the benchmark reward path.\n"
+        },
+        {
+          "event_id": "judge-old-memory",
+          "timestamp": "2026-01-08T10:05:00Z",
+          "kind": "constraint_update",
+          "summary": "Default benchmark can rely on an external model judge",
+          "details": "This older benchmark design depended on a networked evaluator.",
+          "source_agent": "codex",
+          "session_id": "session-judge-old",
+          "thread_title": "Legacy judge policy"
+        },
+        {
+          "event_id": "judge-current-artifact",
+          "timestamp": "2026-02-16T14:00:00Z",
+          "kind": "artifact_snapshot",
+          "artifact_path": "docs/benchmarking.md",
+          "content": "# Benchmarking Graphiti\n\nThe default deterministic reward path must not require an external model judge.\nKeep the benchmark deterministic and offline-capable.\nReward is only returned when hard gates pass.\n"
+        },
+        {
+          "event_id": "judge-current-history",
+          "timestamp": "2026-02-16T14:10:00Z",
+          "kind": "history_turn",
+          "session_id": "session-judge-current",
+          "thread_title": "Offline reward contract",
+          "user_message": "What makes the benchmark safe for unattended optimization now?",
+          "assistant_message": "Keep the default reward path deterministic and offline-capable, and do not require an external model judge."
+        },
+        {
+          "event_id": "judge-current-memory",
+          "timestamp": "2026-02-16T14:15:00Z",
+          "kind": "constraint_update",
+          "summary": "Default benchmark must remain deterministic and offline-capable",
+          "details": "The reward path must not require an external model judge.",
+          "source_agent": "codex",
+          "session_id": "session-judge-current",
+          "thread_title": "Offline reward contract",
+          "supersedes": ["judge-old-memory"]
+        }
+      ]
+    },
+    {
+      "scenario_id": "backend_reversal",
+      "suite": "temporal_replay",
+      "events": [
+        {
+          "event_id": "backend-old-artifact",
+          "timestamp": "2026-01-12T08:00:00Z",
+          "kind": "artifact_snapshot",
+          "artifact_path": "docs/backend-plan.md",
+          "content": "# Backend Plan\n\nDefault local backend: Neo4j.\n"
+        },
+        {
+          "event_id": "backend-old-history",
+          "timestamp": "2026-01-12T08:10:00Z",
+          "kind": "history_turn",
+          "session_id": "session-backend-old",
+          "thread_title": "Neo4j fallback default",
+          "user_message": "Which backend should local Graphiti use?",
+          "assistant_message": "Use Neo4j as the local default backend."
+        },
+        {
+          "event_id": "backend-old-memory",
+          "timestamp": "2026-01-12T08:15:00Z",
+          "kind": "decision_update",
+          "summary": "Default local backend is Neo4j",
+          "details": "The first local benchmark prototype used Neo4j by default.",
+          "source_agent": "codex",
+          "session_id": "session-backend-old",
+          "thread_title": "Neo4j fallback default"
+        },
+        {
+          "event_id": "backend-current-artifact",
+          "timestamp": "2026-03-01T09:00:00Z",
+          "kind": "artifact_snapshot",
+          "artifact_path": "pyproject.toml",
+          "content": "[project]\nname = \"graphiti-memory-benchmark\"\nrequires-python = \">=3.10\"\n\n[tool.graphiti]\ndefault_backend = \"kuzu\"\n"
+        },
+        {
+          "event_id": "backend-current-history",
+          "timestamp": "2026-03-01T09:05:00Z",
+          "kind": "history_turn",
+          "session_id": "session-backend-current",
+          "thread_title": "Kuzu default rollout",
+          "user_message": "Which backend should local Graphiti use now?",
+          "assistant_message": "Use Kuzu as the local default backend and keep Neo4j as the fallback backend."
+        },
+        {
+          "event_id": "backend-current-memory",
+          "timestamp": "2026-03-01T09:10:00Z",
+          "kind": "decision_update",
+          "summary": "Default local backend is Kuzu",
+          "details": "Kuzu is the current local default backend. Neo4j remains the fallback backend.",
+          "source_agent": "codex",
+          "session_id": "session-backend-current",
+          "thread_title": "Kuzu default rollout",
+          "supersedes": ["backend-old-memory", "backend-old-history"]
+        }
+      ]
+    },
+    {
+      "scenario_id": "onboarding_refresh",
+      "suite": "temporal_replay",
+      "events": [
+        {
+          "event_id": "onboarding-old-artifact",
+          "timestamp": "2026-01-20T07:00:00Z",
+          "kind": "artifact_snapshot",
+          "artifact_path": "docs/onboarding-legacy.md",
+          "content": "# Legacy Onboarding\n\nUse `pip install -e .` and run `pytest` directly.\n"
+        },
+        {
+          "event_id": "onboarding-old-memory",
+          "timestamp": "2026-01-20T07:10:00Z",
+          "kind": "memory_seed",
+          "memory_kind": "workflow",
+          "summary": "Use pip install -e . and pytest directly",
+          "details": "This was the older onboarding workflow before the repo standardized on make targets.",
+          "source_agent": "codex",
+          "session_id": "session-onboarding-old",
+          "thread_title": "Legacy onboarding flow"
+        },
+        {
+          "event_id": "onboarding-current-artifact",
+          "timestamp": "2026-03-05T16:00:00Z",
+          "kind": "artifact_snapshot",
+          "artifact_path": "README.md",
+          "content": "# Graphiti Memory\n\nUse `make test` to run tests.\n"
+        },
+        {
+          "event_id": "onboarding-current-history",
+          "timestamp": "2026-03-05T16:05:00Z",
+          "kind": "history_turn",
+          "session_id": "session-onboarding-current",
+          "thread_title": "Current onboarding flow",
+          "user_message": "What command should a new contributor run for tests now?",
+          "assistant_message": "Use make test. The old pip-install-plus-pytest flow is no longer the default onboarding path."
+        },
+        {
+          "event_id": "onboarding-current-memory",
+          "timestamp": "2026-03-05T16:10:00Z",
+          "kind": "decision_update",
+          "summary": "Use make test for the default local test workflow",
+          "details": "The repo standardized on make targets for onboarding and local test runs.",
+          "source_agent": "codex",
+          "session_id": "session-onboarding-current",
+          "thread_title": "Current onboarding flow",
+          "supersedes": ["onboarding-old-memory"]
+        }
+      ]
+    },
+    {
+      "scenario_id": "migration_window",
+      "suite": "temporal_replay",
+      "events": [
+        {
+          "event_id": "migration-window-artifact",
+          "timestamp": "2026-02-01T08:00:00Z",
+          "kind": "artifact_snapshot",
+          "artifact_path": "docs/migration-window.md",
+          "content": "# Migration Window\n\nUntil the compatibility window ends, use `graphiti migrate --legacy`.\n"
+        },
+        {
+          "event_id": "migration-window-memory",
+          "timestamp": "2026-02-01T08:05:00Z",
+          "kind": "constraint_update",
+          "summary": "Use graphiti migrate --legacy during the compatibility window",
+          "details": "This temporary migration command is valid only until the compatibility window closes.",
+          "source_agent": "codex",
+          "session_id": "session-migration-window",
+          "thread_title": "Compatibility window migration",
+          "active_until": "2026-02-15T00:00:00Z"
+        },
+        {
+          "event_id": "migration-current-history",
+          "timestamp": "2026-02-18T08:30:00Z",
+          "kind": "history_turn",
+          "session_id": "session-migration-current",
+          "thread_title": "Post-window migration",
+          "user_message": "What migration command should we use now?",
+          "assistant_message": "Use graphiti migrate. The legacy flag was only valid during the compatibility window."
+        },
+        {
+          "event_id": "migration-current-memory",
+          "timestamp": "2026-02-18T08:35:00Z",
+          "kind": "decision_update",
+          "summary": "Use graphiti migrate after the compatibility window",
+          "details": "The legacy flag expired with the temporary migration window.",
+          "source_agent": "codex",
+          "session_id": "session-migration-current",
+          "thread_title": "Post-window migration"
+        }
+      ]
+    },
+    {
+      "scenario_id": "resume_target",
+      "suite": "temporal_replay",
+      "events": [
+        {
+          "event_id": "resume-old-history",
+          "timestamp": "2026-01-15T13:00:00Z",
+          "kind": "history_turn",
+          "session_id": "session-resume-old",
+          "thread_title": "Trace ordering cleanup",
+          "user_message": "What should we optimize next?",
+          "assistant_message": "Keep pushing trace ordering in the deterministic suite. That was the earlier optimization target."
+        },
+        {
+          "event_id": "resume-old-memory",
+          "timestamp": "2026-01-15T13:10:00Z",
+          "kind": "memory_seed",
+          "memory_kind": "pattern",
+          "summary": "Optimize trace ordering in deterministic_core",
+          "details": "The earlier benchmark loop focused on trace ordering and candidate ordering.",
+          "source_agent": "codex",
+          "session_id": "session-resume-old",
+          "thread_title": "Trace ordering cleanup"
+        },
+        {
+          "event_id": "resume-current-artifact",
+          "timestamp": "2026-03-20T10:00:00Z",
+          "kind": "artifact_snapshot",
+          "artifact_path": "docs/reward-loop.md",
+          "content": "# Reward Loop\n\nUse temporal replay smoke for inner-loop optimization.\nUse temporal replay full as the acceptance gate.\nKeep deterministic_core smoke as a regression guard.\n"
+        },
+        {
+          "event_id": "resume-current-history",
+          "timestamp": "2026-03-20T10:05:00Z",
+          "kind": "history_turn",
+          "session_id": "session-resume-current",
+          "thread_title": "Temporal replay benchmark plan",
+          "user_message": "What should the next benchmark loop optimize?",
+          "assistant_message": "Shift the main reward target to temporal replay smoke and keep deterministic_core smoke as the regression guard."
+        },
+        {
+          "event_id": "resume-current-memory",
+          "timestamp": "2026-03-20T10:10:00Z",
+          "kind": "decision_update",
+          "summary": "Optimize temporal_replay smoke and gate on temporal_replay full",
+          "details": "The main reward target is temporal_replay smoke. Keep deterministic_core smoke as a regression guard.",
+          "source_agent": "codex",
+          "session_id": "session-resume-current",
+          "thread_title": "Temporal replay benchmark plan",
+          "supersedes": ["resume-old-memory", "resume-old-history"]
+        }
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "task_id": "temporal-search-current-guidance",
+      "suite": "temporal_replay",
+      "tier": "smoke",
+      "scenario_id": "search_guidance",
+      "query_time": "2026-02-20T12:00:00Z",
+      "query": "What should the agent do before broad file search now?",
+      "task_type": "history_recall",
+      "difficulty": "medium",
+      "gold_facts": [
+        {"key": "current_search_workflow", "values": ["Run Graphiti recall before broad file search"], "match": "all_contains"},
+        {"key": "why", "values": ["avoid", "token-hungry repository search"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["thread:Recall before search"]}
+      ],
+      "forbidden_support_sets": [
+        {"source_ids": ["session:session-search-old"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 420, "max_selected_items": 2},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support", "stale_support"],
+      "notes": "Current search workflow should prefer recall-first over stale search-first guidance."
+    },
+    {
+      "task_id": "temporal-search-current-rationale",
+      "suite": "temporal_replay",
+      "tier": "smoke",
+      "scenario_id": "search_guidance",
+      "query_time": "2026-02-20T12:00:00Z",
+      "query": "Why should the agent use recall before broad file search now?",
+      "task_type": "multi_hop_recall",
+      "difficulty": "hard",
+      "gold_facts": [
+        {"key": "workflow", "values": ["Run Graphiti recall before broad file search"], "match": "all_contains"},
+        {"key": "reason", "values": ["avoid", "token-hungry repository search"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["thread:Recall before search"]},
+        {"source_ids": ["artifact:AGENTS.md", "thread:Recall before search"]}
+      ],
+      "forbidden_support_sets": [
+        {"source_ids": ["session:session-search-old"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 520, "max_selected_items": 4},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support", "stale_support"],
+      "notes": "The current rationale should combine the current artifact and current decision history."
+    },
+    {
+      "task_id": "temporal-judge-current-policy",
+      "suite": "temporal_replay",
+      "tier": "smoke",
+      "scenario_id": "judge_policy",
+      "query_time": "2026-02-20T12:00:00Z",
+      "query": "What is the current default judge policy for the benchmark reward path?",
+      "task_type": "multi_hop_recall",
+      "difficulty": "hard",
+      "gold_facts": [
+        {"key": "judge_policy", "values": ["deterministic", "offline-capable"], "match": "all_contains"},
+        {"key": "judge_restriction", "values": ["must not require an external model judge"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["thread:Offline reward contract"]},
+        {"source_ids": ["artifact:docs/benchmarking.md", "thread:Offline reward contract"]}
+      ],
+      "forbidden_support_sets": [
+        {"source_ids": ["memory:constraint:default-benchmark-can-rely-on-an-external-model-judge"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 560, "max_selected_items": 4},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support", "stale_support"],
+      "notes": "Current policy should reject the older external-judge design."
+    },
+    {
+      "task_id": "temporal-backend-current-default",
+      "suite": "temporal_replay",
+      "tier": "smoke",
+      "scenario_id": "backend_reversal",
+      "query_time": "2026-03-15T12:00:00Z",
+      "query": "What is the current local default backend and fallback backend?",
+      "task_type": "history_recall",
+      "difficulty": "medium",
+      "gold_facts": [
+        {"key": "backend", "values": ["Kuzu"], "match": "all_contains"},
+        {"key": "fallback", "values": ["Neo4j", "fallback"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["memory:decision:default-local-backend-is-kuzu"]},
+        {"source_ids": ["thread:Kuzu default rollout"]}
+      ],
+      "forbidden_support_sets": [
+        {"source_ids": ["session:session-backend-old"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 420, "max_selected_items": 2},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support", "stale_support"],
+      "notes": "The current backend default should come from the newer rollout."
+    },
+    {
+      "task_id": "temporal-onboarding-current-test-command",
+      "suite": "temporal_replay",
+      "tier": "smoke",
+      "scenario_id": "onboarding_refresh",
+      "query_time": "2026-03-10T12:00:00Z",
+      "query": "What command should a new contributor run for tests now?",
+      "task_type": "artifact_recall",
+      "difficulty": "easy",
+      "gold_facts": [
+        {"key": "test_command", "values": ["make test"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["artifact:README.md"]}
+      ],
+      "forbidden_support_sets": [
+        {"source_ids": ["artifact:docs/onboarding-legacy.md"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 320, "max_selected_items": 1},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support", "stale_support"],
+      "notes": "Current onboarding should cite the README, not the legacy onboarding doc."
+    },
+    {
+      "task_id": "temporal-migration-current-command",
+      "suite": "temporal_replay",
+      "tier": "smoke",
+      "scenario_id": "migration_window",
+      "query_time": "2026-02-20T12:00:00Z",
+      "query": "What migration command should we use now after the compatibility window?",
+      "task_type": "multi_hop_recall",
+      "difficulty": "hard",
+      "gold_facts": [
+        {"key": "migration_command", "values": ["graphiti migrate"], "match": "all_contains"},
+        {"key": "legacy_expired", "values": ["legacy flag", "window"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["thread:Post-window migration"]}
+      ],
+      "forbidden_support_sets": [
+        {"source_ids": ["session:session-migration-window"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 480, "max_selected_items": 3},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support", "stale_support"],
+      "notes": "Current migration guidance should ignore the expired compatibility-window command."
+    },
+    {
+      "task_id": "temporal-resume-current-target",
+      "suite": "temporal_replay",
+      "tier": "smoke",
+      "scenario_id": "resume_target",
+      "query_time": "2026-03-25T12:00:00Z",
+      "query": "What is the main reward target now and which regression suite stays as the guard?",
+      "task_type": "history_recall",
+      "difficulty": "medium",
+      "gold_facts": [
+        {"key": "reward_target", "values": ["temporal_replay smoke"], "match": "all_contains"},
+        {"key": "guard", "values": ["deterministic_core smoke", "regression guard"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["thread:Temporal replay benchmark plan"]}
+      ],
+      "forbidden_support_sets": [
+        {"source_ids": ["session:session-resume-old"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 480, "max_selected_items": 2},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support", "stale_support"],
+      "notes": "The long-gap resume task should surface the new benchmark target, not the old trace-ordering goal."
+    },
+    {
+      "task_id": "temporal-resume-current-policy-doc",
+      "suite": "temporal_replay",
+      "tier": "smoke",
+      "scenario_id": "resume_target",
+      "query_time": "2026-03-25T12:00:00Z",
+      "query": "What are the current inner-loop reward target and acceptance gate in the benchmark plan?",
+      "task_type": "multi_hop_recall",
+      "difficulty": "hard",
+      "gold_facts": [
+        {"key": "inner_loop", "values": ["temporal replay smoke", "temporal_replay smoke"], "match": "any_contains"},
+        {"key": "acceptance_gate", "values": ["temporal replay full", "temporal_replay full"], "match": "any_contains"},
+        {"key": "guard", "values": ["deterministic_core smoke"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["thread:Temporal replay benchmark plan"]},
+        {"source_ids": ["artifact:docs/reward-loop.md", "thread:Temporal replay benchmark plan"]}
+      ],
+      "forbidden_support_sets": [
+        {"source_ids": ["session:session-resume-old"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 620, "max_selected_items": 4},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support", "stale_support"],
+      "notes": "The new benchmark plan should be recoverable from docs plus the latest history turn."
+    },
+    {
+      "task_id": "temporal-search-stale-guidance-avoidance",
+      "suite": "temporal_replay",
+      "tier": "full",
+      "scenario_id": "search_guidance",
+      "query_time": "2026-02-20T12:00:00Z",
+      "query": "Which older guidance should be avoided because it is stale now?",
+      "task_type": "history_recall",
+      "difficulty": "hard",
+      "gold_facts": [
+        {"key": "stale_guidance", "values": ["search-first", "broad repository search"], "match": "all_contains"},
+        {"key": "replacement", "values": ["Run Graphiti recall before broad file search"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["thread:Recall before search"]}
+      ],
+      "forbidden_support_sets": [
+        {"source_ids": ["session:session-search-old"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 520, "max_selected_items": 2},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support", "stale_support"]
+    },
+    {
+      "task_id": "temporal-search-current-artifact",
+      "suite": "temporal_replay",
+      "tier": "full",
+      "scenario_id": "search_guidance",
+      "query_time": "2026-02-20T12:00:00Z",
+      "query": "What artifact records the current guidance before broad file search?",
+      "task_type": "artifact_recall",
+      "difficulty": "medium",
+      "gold_facts": [
+        {"key": "artifact", "values": ["AGENTS.md"], "match": "all_contains"},
+        {"key": "guidance", "values": ["Run Graphiti recall before broad file search"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["artifact:AGENTS.md"]}
+      ],
+      "forbidden_support_sets": [
+        {"source_ids": ["artifact:docs/legacy-search.md"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 320, "max_selected_items": 1},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support", "stale_support"]
+    },
+    {
+      "task_id": "temporal-search-budget-current-context",
+      "suite": "temporal_replay",
+      "tier": "full",
+      "scenario_id": "search_guidance",
+      "query_time": "2026-02-20T12:00:00Z",
+      "query": "Under a tight context budget, what should the agent do before broad file search?",
+      "task_type": "artifact_recall",
+      "difficulty": "medium",
+      "gold_facts": [
+        {"key": "current_search_workflow", "values": ["Run Graphiti recall before broad file search"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["artifact:AGENTS.md"]}
+      ],
+      "forbidden_support_sets": [
+        {"source_ids": ["artifact:docs/legacy-search.md"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 220, "max_selected_items": 1},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support", "stale_support"]
+    },
+    {
+      "task_id": "temporal-judge-stale-avoidance",
+      "suite": "temporal_replay",
+      "tier": "full",
+      "scenario_id": "judge_policy",
+      "query_time": "2026-02-20T12:00:00Z",
+      "query": "Which old benchmark design should be avoided because it is stale now?",
+      "task_type": "history_recall",
+      "difficulty": "hard",
+      "gold_facts": [
+        {"key": "stale_design", "values": ["external model judge"], "match": "all_contains"},
+        {"key": "replacement", "values": ["deterministic", "offline-capable"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["thread:Offline reward contract"]}
+      ],
+      "forbidden_support_sets": [
+        {"source_ids": ["memory:constraint:default-benchmark-can-rely-on-an-external-model-judge"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 520, "max_selected_items": 2},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support", "stale_support"]
+    },
+    {
+      "task_id": "temporal-judge-current-artifact",
+      "suite": "temporal_replay",
+      "tier": "full",
+      "scenario_id": "judge_policy",
+      "query_time": "2026-02-20T12:00:00Z",
+      "query": "Which artifact records the current default judge policy?",
+      "task_type": "artifact_recall",
+      "difficulty": "medium",
+      "gold_facts": [
+        {"key": "artifact", "values": ["docs/benchmarking.md"], "match": "all_contains"},
+        {"key": "policy", "values": ["must not require an external model judge"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["artifact:docs/benchmarking.md"]}
+      ],
+      "forbidden_support_sets": [
+        {"source_ids": ["artifact:docs/legacy-judge.md"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 320, "max_selected_items": 1},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support", "stale_support"]
+    },
+    {
+      "task_id": "temporal-judge-as-of-legacy-policy",
+      "suite": "temporal_replay",
+      "tier": "full",
+      "scenario_id": "judge_policy",
+      "query_time": "2026-01-15T12:00:00Z",
+      "query": "Before the offline reward contract landed, what judge policy was assumed?",
+      "task_type": "history_recall",
+      "difficulty": "medium",
+      "gold_facts": [
+        {"key": "legacy_policy", "values": ["external model judge"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["memory:constraint:default-benchmark-can-rely-on-an-external-model-judge"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 320, "max_selected_items": 1},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support"]
+    },
+    {
+      "task_id": "temporal-backend-as-of-neo4j",
+      "suite": "temporal_replay",
+      "tier": "full",
+      "scenario_id": "backend_reversal",
+      "query_time": "2026-01-20T12:00:00Z",
+      "query": "What was the default local backend before the Kuzu rollout?",
+      "task_type": "history_recall",
+      "difficulty": "medium",
+      "gold_facts": [
+        {"key": "legacy_backend", "values": ["Neo4j"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["thread:Neo4j fallback default"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 320, "max_selected_items": 1},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support"]
+    },
+    {
+      "task_id": "temporal-backend-current-artifact",
+      "suite": "temporal_replay",
+      "tier": "full",
+      "scenario_id": "backend_reversal",
+      "query_time": "2026-03-15T12:00:00Z",
+      "query": "Which artifact records the current local backend default?",
+      "task_type": "artifact_recall",
+      "difficulty": "medium",
+      "gold_facts": [
+        {"key": "artifact", "values": ["pyproject.toml"], "match": "all_contains"},
+        {"key": "backend", "values": ["default_backend", "kuzu"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["artifact:pyproject.toml"]}
+      ],
+      "forbidden_support_sets": [
+        {"source_ids": ["artifact:docs/backend-plan.md"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 320, "max_selected_items": 1},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support", "stale_support"]
+    },
+    {
+      "task_id": "temporal-backend-stale-avoidance",
+      "suite": "temporal_replay",
+      "tier": "full",
+      "scenario_id": "backend_reversal",
+      "query_time": "2026-03-15T12:00:00Z",
+      "query": "Which earlier backend decision is now stale?",
+      "task_type": "history_recall",
+      "difficulty": "hard",
+      "gold_facts": [
+        {"key": "stale_backend", "values": ["Neo4j"], "match": "all_contains"},
+        {"key": "replacement_backend", "values": ["Kuzu"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["thread:Kuzu default rollout"]}
+      ],
+      "forbidden_support_sets": [
+        {"source_ids": ["session:session-backend-old"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 420, "max_selected_items": 2},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support", "stale_support"]
+    },
+    {
+      "task_id": "temporal-onboarding-stale-avoidance",
+      "suite": "temporal_replay",
+      "tier": "full",
+      "scenario_id": "onboarding_refresh",
+      "query_time": "2026-03-10T12:00:00Z",
+      "query": "Which older onboarding workflow should not be treated as current?",
+      "task_type": "history_recall",
+      "difficulty": "hard",
+      "gold_facts": [
+        {"key": "stale_workflow", "values": ["pip install -e .", "pytest directly"], "match": "all_contains"},
+        {"key": "replacement", "values": ["make test"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["thread:Current onboarding flow"]}
+      ],
+      "forbidden_support_sets": [
+        {"source_ids": ["session:session-onboarding-old"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 480, "max_selected_items": 2},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support", "stale_support"]
+    },
+    {
+      "task_id": "temporal-onboarding-budget-tight",
+      "suite": "temporal_replay",
+      "tier": "full",
+      "scenario_id": "onboarding_refresh",
+      "query_time": "2026-03-10T12:00:00Z",
+      "query": "Under a very tight context budget, what test command should onboarding return now?",
+      "task_type": "artifact_recall",
+      "difficulty": "medium",
+      "gold_facts": [
+        {"key": "current_command", "values": ["make test"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["artifact:README.md"]}
+      ],
+      "forbidden_support_sets": [
+        {"source_ids": ["artifact:docs/onboarding-legacy.md"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 180, "max_selected_items": 1},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support", "stale_support"]
+    },
+    {
+      "task_id": "temporal-onboarding-as-of-legacy-flow",
+      "suite": "temporal_replay",
+      "tier": "full",
+      "scenario_id": "onboarding_refresh",
+      "query_time": "2026-01-25T12:00:00Z",
+      "query": "Before the onboarding refresh, what test workflow was documented?",
+      "task_type": "artifact_recall",
+      "difficulty": "medium",
+      "gold_facts": [
+        {"key": "legacy_workflow", "values": ["pip install -e .", "pytest"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["artifact:docs/onboarding-legacy.md"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 300, "max_selected_items": 1},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support"]
+    },
+    {
+      "task_id": "temporal-migration-as-of-window",
+      "suite": "temporal_replay",
+      "tier": "full",
+      "scenario_id": "migration_window",
+      "query_time": "2026-02-10T12:00:00Z",
+      "query": "During the compatibility window, which migration command should be used?",
+      "task_type": "history_recall",
+      "difficulty": "medium",
+      "gold_facts": [
+        {"key": "window_command", "values": ["graphiti migrate --legacy"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["memory:constraint:use-graphiti-migrate-legacy-during-the-compatibility-window"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 360, "max_selected_items": 1},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support"]
+    },
+    {
+      "task_id": "temporal-migration-stale-window-avoidance",
+      "suite": "temporal_replay",
+      "tier": "full",
+      "scenario_id": "migration_window",
+      "query_time": "2026-02-20T12:00:00Z",
+      "query": "Which temporary migration guidance is stale now?",
+      "task_type": "history_recall",
+      "difficulty": "hard",
+      "gold_facts": [
+        {"key": "stale_guidance", "values": ["graphiti migrate --legacy"], "match": "all_contains"},
+        {"key": "current_guidance", "values": ["graphiti migrate"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["thread:Post-window migration"]}
+      ],
+      "forbidden_support_sets": [
+        {"source_ids": ["session:session-migration-window"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 480, "max_selected_items": 2},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support", "stale_support"]
+    },
+    {
+      "task_id": "temporal-migration-budget-current-command",
+      "suite": "temporal_replay",
+      "tier": "full",
+      "scenario_id": "migration_window",
+      "query_time": "2026-02-20T12:00:00Z",
+      "query": "Under a tight budget, what migration command is current now?",
+      "task_type": "history_recall",
+      "difficulty": "medium",
+      "gold_facts": [
+        {"key": "current_command", "values": ["graphiti migrate"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["thread:Post-window migration"]}
+      ],
+      "forbidden_support_sets": [
+        {"source_ids": ["session:session-migration-window"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 220, "max_selected_items": 1},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support", "stale_support"]
+    },
+    {
+      "task_id": "temporal-resume-gap-current",
+      "suite": "temporal_replay",
+      "tier": "full",
+      "scenario_id": "resume_target",
+      "query_time": "2026-03-25T12:00:00Z",
+      "query": "After a long gap, what should the benchmark loop optimize first now?",
+      "task_type": "history_recall",
+      "difficulty": "hard",
+      "gold_facts": [
+        {"key": "reward_target", "values": ["temporal_replay smoke"], "match": "all_contains"},
+        {"key": "gate", "values": ["temporal_replay full"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["thread:Temporal replay benchmark plan"]}
+      ],
+      "forbidden_support_sets": [
+        {"source_ids": ["session:session-resume-old"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 520, "max_selected_items": 2},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support", "stale_support"]
+    },
+    {
+      "task_id": "temporal-resume-stale-target-avoidance",
+      "suite": "temporal_replay",
+      "tier": "full",
+      "scenario_id": "resume_target",
+      "query_time": "2026-03-25T12:00:00Z",
+      "query": "Which earlier optimization target is stale after the benchmark plan changed?",
+      "task_type": "history_recall",
+      "difficulty": "hard",
+      "gold_facts": [
+        {"key": "stale_target", "values": ["trace ordering"], "match": "all_contains"},
+        {"key": "replacement_target", "values": ["temporal replay"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["thread:Temporal replay benchmark plan"]}
+      ],
+      "forbidden_support_sets": [
+        {"source_ids": ["session:session-resume-old"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 520, "max_selected_items": 2},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support", "stale_support"]
+    },
+    {
+      "task_id": "temporal-resume-as-of-old-target",
+      "suite": "temporal_replay",
+      "tier": "full",
+      "scenario_id": "resume_target",
+      "query_time": "2026-01-20T12:00:00Z",
+      "query": "Before the benchmark plan changed, what was the optimization target?",
+      "task_type": "history_recall",
+      "difficulty": "medium",
+      "gold_facts": [
+        {"key": "old_target", "values": ["trace ordering"], "match": "all_contains"}
+      ],
+      "acceptable_support_sets": [
+        {"source_ids": ["thread:Trace ordering cleanup"]}
+      ],
+      "budgets": {"max_retrieval_calls": 2, "max_returned_context_chars": 320, "max_selected_items": 1},
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support"]
+    }
+  ]
+}

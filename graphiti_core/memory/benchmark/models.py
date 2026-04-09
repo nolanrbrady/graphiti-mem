@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
-BENCHMARK_SCHEMA_VERSION = '2.0'
+from graphiti_core.memory.models import MemoryKind
+
+BENCHMARK_SCHEMA_VERSION = '2.1'
 
 _ARTIFACT_LIKE_REFERENCES = {
     'agents.md',
@@ -80,6 +83,16 @@ class BenchmarkHardFailRule(str, Enum):
     budget_overrun = 'budget_overrun'
     wrong_support = 'wrong_support'
     unsupported_claim = 'unsupported_claim'
+    stale_support = 'stale_support'
+
+
+class BenchmarkScenarioEventKind(str, Enum):
+    artifact_snapshot = 'artifact_snapshot'
+    history_turn = 'history_turn'
+    memory_seed = 'memory_seed'
+    decision_update = 'decision_update'
+    pitfall_update = 'pitfall_update'
+    constraint_update = 'constraint_update'
 
 
 class BenchmarkTextCheck(BaseModel):
@@ -98,6 +111,31 @@ class BenchmarkGoldFact(BaseModel):
 
 class BenchmarkSupportSet(BaseModel):
     source_ids: list[str] = Field(default_factory=list)
+
+
+class BenchmarkScenarioEvent(BaseModel):
+    event_id: str
+    timestamp: datetime
+    kind: BenchmarkScenarioEventKind
+    artifact_path: str = ''
+    content: str = ''
+    user_message: str = ''
+    assistant_message: str = ''
+    memory_kind: MemoryKind | None = None
+    summary: str = ''
+    details: str = ''
+    source_agent: str = 'codex'
+    session_id: str = ''
+    thread_title: str = ''
+    tags: list[str] = Field(default_factory=list)
+    supersedes: list[str] = Field(default_factory=list)
+    active_until: datetime | None = None
+
+
+class BenchmarkScenarioFixture(BaseModel):
+    scenario_id: str
+    suite: str = ''
+    events: list[BenchmarkScenarioEvent] = Field(default_factory=list)
 
 
 class BenchmarkBudget(BaseModel):
@@ -125,7 +163,11 @@ class BenchmarkTaskFixture(BaseModel):
     difficulty: str
     gold_facts: list[BenchmarkGoldFact] = Field(default_factory=list)
     acceptable_support_sets: list[BenchmarkSupportSet] = Field(default_factory=list)
+    forbidden_support_sets: list[BenchmarkSupportSet] = Field(default_factory=list)
     distractor_source_ids: list[str] = Field(default_factory=list)
+    scenario_id: str = ''
+    query_time: datetime | None = None
+    events: list[BenchmarkScenarioEvent] = Field(default_factory=list)
     budgets: BenchmarkBudget = Field(default_factory=BenchmarkBudget)
     hard_fail_rules: list[BenchmarkHardFailRule] = Field(default_factory=list)
     gold_answer_checks: list[BenchmarkTextCheck] = Field(default_factory=list)
@@ -158,6 +200,7 @@ class BenchmarkChannelResult(BaseModel):
     retrieval_score: float
     attribution_score: float
     answer_score: float
+    temporal_score: float = 1.0
     capability_score: float
     efficiency_score: float
     task_score: float
@@ -206,6 +249,7 @@ class BenchmarkAggregateResult(BaseModel):
     mean_retrieval_score: float
     mean_attribution_score: float
     mean_answer_score: float
+    mean_temporal_score: float
     mean_capability_score: float
     mean_efficiency_score: float
     artifact_task_score: float
@@ -215,6 +259,7 @@ class BenchmarkAggregateResult(BaseModel):
     provenance_failure_count: int
     support_failure_count: int
     unsupported_claim_failure_count: int
+    stale_support_failure_count: int
     mean_returned_context_chars: float
     mean_control_context_chars: float
     gate_thresholds: dict[str, float] = Field(default_factory=dict)
