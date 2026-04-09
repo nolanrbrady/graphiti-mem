@@ -1,4 +1,4 @@
-.PHONY: install format lint test all check
+.PHONY: install format lint test all check benchmark-memory benchmark-memory-dogfood
 
 # Define variables
 PYTHON = python3
@@ -27,6 +27,13 @@ lint:
 # Run tests
 test:
 	$(PYTEST) tests/memory -m "not integration"
+
+# Run the deterministic Graphiti memory benchmark
+benchmark-memory:
+	$(UV) run python -m graphiti_core.memory.benchmark run --suite deterministic_core --tier smoke
+
+benchmark-memory-dogfood:
+	$(UV) run python -m graphiti_core.memory.benchmark run --mode dogfood --tier smoke
 
 # Run format, lint, and test
 check: format lint test
