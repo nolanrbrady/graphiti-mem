@@ -226,19 +226,10 @@ def _multi_hop_trace_candidate_ids(
     ranked_memories: list[ParsedMemoryEpisode],
 ) -> list[str]:
     selected_ids = {memory.uuid for memory in selected_memories}
-    remaining_memories = [memory for memory in ranked_memories if memory.uuid not in selected_ids]
+    ordered_memories = [*selected_memories, *[m for m in ranked_memories if m.uuid not in selected_ids]]
     candidate_ids: list[str] = []
     for prefix in ('thread:', 'artifact:', 'memory:', 'session:'):
-        for memory in selected_memories:
-            candidate_ids.extend(
-                candidate_id
-                for candidate_id in _memory_candidate_ids(
-                    memory,
-                    task_type=BenchmarkTaskType.multi_hop_recall,
-                )
-                if candidate_id.startswith(prefix)
-            )
-        for memory in remaining_memories:
+        for memory in ordered_memories:
             candidate_ids.extend(
                 candidate_id
                 for candidate_id in _memory_candidate_ids(

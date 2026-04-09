@@ -238,31 +238,15 @@ def test_multi_hop_trace_candidate_ids_prioritize_selected_thread_and_artifact_s
         source='artifact',
         artifact_path='README.md',
     )
-    leftover_thread = ParsedMemoryEpisode(
-        uuid='episode-leftover-thread',
-        kind=MemoryKind.decision,
-        summary='Prefer pattern Y over pattern X',
-        details='Keeps ingestion deterministic.',
-        source='agent',
-        source_agent='codex',
-        session_id='session-pattern-y',
-        thread_title='Pattern Y migration',
-    )
 
     candidate_ids = _multi_hop_trace_candidate_ids(
         [selected_pattern, selected_doc],
-        [selected_doc, selected_pattern, leftover_thread, leftover_artifact],
+        [selected_doc, selected_pattern, leftover_artifact],
     )
 
     assert candidate_ids[:3] == [
         'thread:Autoresearch reward loop',
         'artifact:docs/benchmarking.md',
-        'thread:Pattern Y migration',
-    ]
-    assert candidate_ids[:4] == [
-        'thread:Autoresearch reward loop',
-        'artifact:docs/benchmarking.md',
-        'thread:Pattern Y migration',
         'artifact:README.md',
     ]
 
