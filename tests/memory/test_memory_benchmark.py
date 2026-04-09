@@ -23,6 +23,7 @@ from graphiti_core.memory.benchmark.models import (
     BenchmarkTaskType,
 )
 from graphiti_core.memory.benchmark.runner import (
+    _history_trace_candidate_ids,
     _memory_candidate_ids,
     _channel_result,
     benchmark_doctor,
@@ -164,6 +165,49 @@ def test_memory_candidate_ids_prioritize_support_sources_by_task_type() -> None:
     assert artifact_ids[-1] == 'session:session-search-first'
     assert history_ids[-1] == 'session:session-search-first'
     assert multihop_ids[-1] == 'session:session-search-first'
+
+
+def test_history_trace_candidate_ids_prioritize_selected_history_match() -> None:
+    selected_pitfall = ParsedMemoryEpisode(
+        uuid='episode-pitfall',
+        kind=MemoryKind.pitfall,
+        summary='Transcript import alone is insufficient for deterministic recall',
+        details='Store durable memories too.',
+        source='agent',
+        source_agent='codex',
+        session_id='session-history-gap',
+        thread_title='History import gap',
+    )
+    selected_constraint = ParsedMemoryEpisode(
+        uuid='episode-constraint',
+        kind=MemoryKind.constraint,
+        summary='Default benchmark must remain deterministic and offline-capable',
+        details='Avoid external judges.',
+        source='agent',
+        source_agent='codex',
+        session_id='session-benchmark-loop',
+        thread_title='Autoresearch reward loop',
+    )
+    leftover_artifact = ParsedMemoryEpisode(
+        uuid='episode-artifact',
+        kind=MemoryKind.index_artifact,
+        summary='Importing transcript sessions stores source evidence',
+        details='docs/history.md',
+        source='artifact',
+        artifact_path='docs/history.md',
+    )
+
+    candidate_ids = _history_trace_candidate_ids(
+        [selected_constraint, selected_pitfall],
+        [leftover_artifact, selected_constraint, selected_pitfall],
+        query='Why is transcript import alone not enough for the offline benchmark?',
+    )
+
+    assert candidate_ids[:2] == [
+        'thread:History import gap',
+        'thread:Autoresearch reward loop',
+    ]
+    assert candidate_ids[-1] == 'artifact:docs/history.md'
 
 
 def test_telemetry_rollout_and_sqlite_metrics(tmp_path: Path) -> None:

@@ -87,6 +87,15 @@ def _mean(values: list[float]) -> float:
     return sum(values) / len(values)
 
 
+def _token_overlap(text: str, query: str) -> int:
+    normalized = text.lower()
+    tokens = tokenize_query(query)
+    score = sum(1 for token in tokens if token in normalized)
+    if query.lower() in normalized:
+        score += max(2, len(tokens))
+    return score
+
+
 def _matching_snippet(text: str, query: str, *, max_len: int = 220) -> str:
     tokens = tokenize_query(query)
     lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -163,6 +172,53 @@ def _memory_candidate_ids(
         provenance_id for provenance_id in provenance_ids if provenance_id.startswith('session:')
     )
     return _dedupe_preserve(preferred_ids)
+
+
+def _history_trace_candidate_ids(
+    selected_memories: list[ParsedMemoryEpisode],
+    ranked_memories: list[ParsedMemoryEpisode],
+    *,
+    query: str,
+) -> list[str]:
+    selected_ids = {memory.uuid for memory in selected_memories}
+    selected_history = sorted(
+        [memory for memory in selected_memories if memory.kind is not MemoryKind.index_artifact],
+        key=lambda memory: (
+            _token_overlap(' '.join([memory.summary, memory.thread_title]), query),
+            _token_overlap(memory.details, query),
+            memory.created_at.timestamp() if memory.created_at is not None else 0.0,
+        ),
+        reverse=True,
+    )
+    remaining_history = [
+        memory
+        for memory in ranked_memories
+        if memory.uuid not in selected_ids and memory.kind is not MemoryKind.index_artifact
+    ]
+    remaining_artifacts = [
+        memory
+        for memory in ranked_memories
+        if memory.uuid not in selected_ids and memory.kind is MemoryKind.index_artifact
+    ]
+    ordered_memories = [*selected_history, *remaining_history, *remaining_artifacts]
+
+    candidate_ids: list[str] = []
+    for memory in ordered_memories:
+        if memory.thread_title:
+            candidate_ids.append(thread_source_id(memory.thread_title))
+    for memory in ordered_memories:
+        candidate_ids.extend(
+            provenance_id
+            for provenance_id in _memory_provenance_ids(memory)
+            if provenance_id.startswith('memory:')
+        )
+    for memory in ordered_memories:
+        if memory.session_id:
+            candidate_ids.append(session_source_id(memory.session_id))
+    for memory in remaining_artifacts:
+        if memory.artifact_path:
+            candidate_ids.append(artifact_source_id(memory.artifact_path))
+    return _dedupe_preserve(candidate_ids)
 
 
 def _memory_rank(engine: MemoryEngine, memory: ParsedMemoryEpisode, query: str) -> tuple[int, int, float, str]:
@@ -395,13 +451,20 @@ async def _collect_treatment_channel(
         selected_memories,
         fixture,
     )
-    candidate_ids = _dedupe_preserve(
-        [
-            candidate_id
-            for memory in ranked_memories
-            for candidate_id in _memory_candidate_ids(memory, task_type=fixture.task_type)
-        ]
-    )
+    if fixture.task_type is BenchmarkTaskType.history_recall:
+        candidate_ids = _history_trace_candidate_ids(
+            selected_memories,
+            ranked_memories,
+            query=fixture.query,
+        )
+    else:
+        candidate_ids = _dedupe_preserve(
+            [
+                candidate_id
+                for memory in ranked_memories
+                for candidate_id in _memory_candidate_ids(memory, task_type=fixture.task_type)
+            ]
+        )
     trace = BenchmarkRetrievalTrace(
         retrieval_calls=retrieval_calls,
         retrieval_queries=retrieval_queries,
