@@ -133,6 +133,38 @@ def _memory_provenance_ids(memory: ParsedMemoryEpisode) -> list[str]:
     return _dedupe_preserve(provenance_ids)
 
 
+def _memory_candidate_ids(
+    memory: ParsedMemoryEpisode,
+    *,
+    task_type: BenchmarkTaskType,
+) -> list[str]:
+    provenance_ids = _memory_provenance_ids(memory)
+    preferred_ids: list[str] = []
+
+    if task_type is BenchmarkTaskType.artifact_recall and memory.artifact_path:
+        preferred_ids.append(artifact_source_id(memory.artifact_path))
+    elif task_type is BenchmarkTaskType.history_recall and memory.thread_title:
+        preferred_ids.append(thread_source_id(memory.thread_title))
+    else:
+        if memory.thread_title:
+            preferred_ids.append(thread_source_id(memory.thread_title))
+        if memory.artifact_path:
+            preferred_ids.append(artifact_source_id(memory.artifact_path))
+
+    preferred_ids.extend(
+        provenance_id
+        for provenance_id in provenance_ids
+        if not provenance_id.startswith(('memory:', 'session:'))
+    )
+    preferred_ids.extend(
+        provenance_id for provenance_id in provenance_ids if provenance_id.startswith('memory:')
+    )
+    preferred_ids.extend(
+        provenance_id for provenance_id in provenance_ids if provenance_id.startswith('session:')
+    )
+    return _dedupe_preserve(preferred_ids)
+
+
 def _memory_rank(engine: MemoryEngine, memory: ParsedMemoryEpisode, query: str) -> tuple[int, int, float, str]:
     return (
         engine._memory_overlap_score(memory, query),
@@ -365,9 +397,9 @@ async def _collect_treatment_channel(
     )
     candidate_ids = _dedupe_preserve(
         [
-            provenance_id
+            candidate_id
             for memory in ranked_memories
-            for provenance_id in _memory_provenance_ids(memory)
+            for candidate_id in _memory_candidate_ids(memory, task_type=fixture.task_type)
         ]
     )
     trace = BenchmarkRetrievalTrace(

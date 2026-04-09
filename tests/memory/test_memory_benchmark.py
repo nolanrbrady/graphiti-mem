@@ -23,11 +23,13 @@ from graphiti_core.memory.benchmark.models import (
     BenchmarkTaskType,
 )
 from graphiti_core.memory.benchmark.runner import (
+    _memory_candidate_ids,
     _channel_result,
     benchmark_doctor,
     compare_results,
     run_benchmark,
 )
+from graphiti_core.memory.models import MemoryKind, ParsedMemoryEpisode
 from graphiti_core.memory.benchmark.telemetry import (
     count_search_actions_from_rollout,
     read_codex_thread_metrics,
@@ -137,6 +139,31 @@ def test_fixture_catalog_and_suite_expansion() -> None:
     assert task.budgets.max_returned_context_chars > 0
     assert task.gold_facts
     assert task.acceptable_support_sets
+
+
+def test_memory_candidate_ids_prioritize_support_sources_by_task_type() -> None:
+    memory = ParsedMemoryEpisode(
+        uuid='episode-1',
+        kind=MemoryKind.workflow,
+        summary='Run Graphiti recall before broad file search',
+        details='Use recall first.',
+        source='agent',
+        artifact_path='AGENTS.md',
+        source_agent='codex',
+        session_id='session-search-first',
+        thread_title='Recall before search',
+    )
+
+    artifact_ids = _memory_candidate_ids(memory, task_type=BenchmarkTaskType.artifact_recall)
+    history_ids = _memory_candidate_ids(memory, task_type=BenchmarkTaskType.history_recall)
+    multihop_ids = _memory_candidate_ids(memory, task_type=BenchmarkTaskType.multi_hop_recall)
+
+    assert artifact_ids[:2] == ['artifact:AGENTS.md', 'thread:Recall before search']
+    assert history_ids[:2] == ['thread:Recall before search', 'artifact:AGENTS.md']
+    assert multihop_ids[:2] == ['thread:Recall before search', 'artifact:AGENTS.md']
+    assert artifact_ids[-1] == 'session:session-search-first'
+    assert history_ids[-1] == 'session:session-search-first'
+    assert multihop_ids[-1] == 'session:session-search-first'
 
 
 def test_telemetry_rollout_and_sqlite_metrics(tmp_path: Path) -> None:
