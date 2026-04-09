@@ -165,7 +165,23 @@ def _memory_candidate_ids(
     return _dedupe_preserve(preferred_ids)
 
 
-def _memory_rank(engine: MemoryEngine, memory: ParsedMemoryEpisode, query: str) -> tuple[int, int, float, str]:
+def _memory_rank(
+    engine: MemoryEngine,
+    memory: ParsedMemoryEpisode,
+    query: str,
+    *,
+    task_type: BenchmarkTaskType,
+) -> tuple[int, int, int, float, str]:
+    if task_type is BenchmarkTaskType.history_recall:
+        summary_overlap = _token_overlap(' '.join([memory.summary, memory.thread_title]), query)
+        return (
+            1 if memory.kind is not MemoryKind.index_artifact else 0,
+            summary_overlap,
+            engine._memory_overlap_score(memory, query),
+            memory.created_at.timestamp() if memory.created_at is not None else 0.0,
+            _memory_primary_item_id(memory),
+        )
+
     return (
         engine._memory_overlap_score(memory, query),
         -MEMORY_KIND_PRIORITY[memory.kind],
@@ -382,7 +398,12 @@ async def _collect_treatment_channel(
 
     ranked_memories = sorted(
         parsed_memories,
-        key=lambda memory: _memory_rank(engine, memory, fixture.query),
+        key=lambda memory: _memory_rank(
+            engine,
+            memory,
+            fixture.query,
+            task_type=fixture.task_type,
+        ),
         reverse=True,
     )
     selected_memories = _select_memories(
