@@ -165,34 +165,6 @@ def _memory_candidate_ids(
     return _dedupe_preserve(preferred_ids)
 
 
-def _trace_candidate_ids(
-    selected_memories: list[ParsedMemoryEpisode],
-    ranked_memories: list[ParsedMemoryEpisode],
-    *,
-    task_type: BenchmarkTaskType,
-) -> list[str]:
-    selected_ids = {memory.uuid for memory in selected_memories}
-    ordered_memories = [*selected_memories, *[m for m in ranked_memories if m.uuid not in selected_ids]]
-    source_buckets = ('thread:', 'artifact:', 'memory:', 'session:')
-    candidate_ids: list[str] = []
-
-    for prefix in source_buckets:
-        for memory in ordered_memories:
-            candidate_ids.extend(
-                candidate_id
-                for candidate_id in _memory_candidate_ids(memory, task_type=task_type)
-                if candidate_id.startswith(prefix)
-            )
-
-    candidate_ids.extend(
-        candidate_id
-        for memory in ordered_memories
-        for candidate_id in _memory_candidate_ids(memory, task_type=task_type)
-        if not candidate_id.startswith(source_buckets)
-    )
-    return _dedupe_preserve(candidate_ids)
-
-
 def _memory_rank(engine: MemoryEngine, memory: ParsedMemoryEpisode, query: str) -> tuple[int, int, float, str]:
     return (
         engine._memory_overlap_score(memory, query),
@@ -423,10 +395,12 @@ async def _collect_treatment_channel(
         selected_memories,
         fixture,
     )
-    candidate_ids = _trace_candidate_ids(
-        selected_memories,
-        ranked_memories,
-        task_type=fixture.task_type,
+    candidate_ids = _dedupe_preserve(
+        [
+            candidate_id
+            for memory in ranked_memories
+            for candidate_id in _memory_candidate_ids(memory, task_type=fixture.task_type)
+        ]
     )
     trace = BenchmarkRetrievalTrace(
         retrieval_calls=retrieval_calls,
