@@ -54,10 +54,10 @@ def _markdown_summary(result: BenchmarkResult) -> str:
             '',
             f'- Gate passed: `{result.gate_passed}`',
             f'- Reward: `{result.reward}`',
-            f'- Accuracy score: `{result.aggregate.accuracy_score:.3f}`',
-            f'- Evidence coverage: `{result.aggregate.evidence_coverage:.3f}`',
-            f'- Token efficiency: `{result.aggregate.token_efficiency_score:.3f}`',
-            f'- Search efficiency: `{result.aggregate.search_efficiency_score:.3f}`',
+            f'- Mean task score: `{result.aggregate.mean_task_score:.2f}`',
+            f'- Mean retrieval score: `{result.aggregate.mean_retrieval_score:.3f}`',
+            f'- Mean attribution score: `{result.aggregate.mean_attribution_score:.3f}`',
+            f'- Mean answer score: `{result.aggregate.mean_answer_score:.3f}`',
             f'- Failure reasons: `{", ".join(result.failure_reasons) or "none"}`',
         ]
     )

@@ -188,7 +188,7 @@ docker-compose -f docker-compose.test.yml up
 
 ## Benchmarking
 
-Graphiti now includes a deterministic benchmark intended to act as a verifiable reward for autoresearch loops.
+Graphiti now includes a deterministic benchmark intended to act as a verifiable reward for autoresearch loops. See [docs/benchmarking.md](docs/benchmarking.md) for the fixture schema, result schema, and authoring guidance.
 
 - Primary entrypoint: `python -m graphiti_core.memory.benchmark run`
 - Default suite: `deterministic_core`
@@ -206,15 +206,26 @@ The benchmark runs paired execution:
 - control: a deterministic naive source scan over synthetic artifacts, seeded memories, and synthetic Codex history
 - treatment: `MemoryEngine.recall()` over the same seeded corpus
 
-Dogfood mode keeps the same paired evaluation shape, but builds the corpus from the current repo:
+Both modes now emit the same staged metrics:
+
+- `retrieval_score`
+- `attribution_score`
+- `answer_score`
+- `capability_score`
+- `efficiency_score`
+- `task_score`
+
+Dogfood mode keeps the same task/result schema, but builds the corpus from the current repo:
 
 - copies high-signal local artifacts into a temporary benchmark project
 - imports local Codex history for the current repo as source evidence
 - deterministically distills a small set of durable memories from those sessions
 - generates artifact, history, and multi-hop tasks from that local material
 
-The default reward is only emitted when hard gates pass:
+Task score reaches `100` only when the benchmark retrieves the right support, attaches explicit provenance IDs, answers correctly, and stays within hard budgets for retrieval calls and returned context size.
 
-- `reward = 0.60 * accuracy_score + 0.25 * token_efficiency_score + 0.15 * search_efficiency_score`
+The default reward is only emitted when hard gates pass and is the mean normalized task score across the suite.
+
+Legacy fixtures are still accepted and upgraded at load time, but new tasks should be authored directly against the v2 schema documented in [docs/benchmarking.md](docs/benchmarking.md).
 
 The default deterministic suite does not require an external judge model. The optional `hybrid_extended` suite reserves room for future free-form judge-backed tasks.

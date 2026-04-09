@@ -1,0 +1,191 @@
+{
+  "schema_version": "2.0",
+  "tasks": [
+    {
+      "task_id": "artifact-current-benchmark-target",
+      "suite": "deterministic_core",
+      "tier": "full",
+      "query": "What is the current benchmark target, not the legacy benchmark-memory-v1 alias?",
+      "task_type": "artifact_recall",
+      "difficulty": "medium",
+      "gold_facts": [
+        {
+          "key": "current_target",
+          "match": "any_contains",
+          "values": [
+            "make benchmark-memory",
+            "python3 -m graphiti_core.memory.benchmark run --suite deterministic_core --tier smoke"
+          ]
+        }
+      ],
+      "acceptable_support_sets": [
+        {
+          "source_ids": ["artifact:Makefile"]
+        }
+      ],
+      "distractor_source_ids": ["artifact:docs/legacy-benchmark.md"],
+      "budgets": {
+        "max_retrieval_calls": 2,
+        "max_returned_context_chars": 320,
+        "max_selected_items": 1
+      },
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support"],
+      "baseline_expectation": {
+        "minimum_treatment_accuracy": 0.8,
+        "minimum_evidence_coverage": 0.8,
+        "minimum_retrieval_score": 0.8,
+        "minimum_answer_score": 0.8,
+        "minimum_task_score": 0.8
+      },
+      "notes": "Current-vs-legacy command disambiguation should punish stale benchmark aliases."
+    },
+    {
+      "task_id": "artifact-current-python-runtime",
+      "suite": "deterministic_core",
+      "tier": "full",
+      "query": "What Python version does the project currently require?",
+      "task_type": "artifact_recall",
+      "difficulty": "medium",
+      "gold_facts": [
+        {
+          "key": "python_version",
+          "match": "all_contains",
+          "values": [">=3.10"]
+        }
+      ],
+      "acceptable_support_sets": [
+        {
+          "source_ids": ["artifact:pyproject.toml"]
+        }
+      ],
+      "distractor_source_ids": ["artifact:docs/legacy-runtime.md"],
+      "budgets": {
+        "max_retrieval_calls": 2,
+        "max_returned_context_chars": 300,
+        "max_selected_items": 1
+      },
+      "hard_fail_rules": ["missing_provenance", "budget_overrun", "wrong_support"],
+      "baseline_expectation": {
+        "minimum_treatment_accuracy": 0.85,
+        "minimum_evidence_coverage": 0.85,
+        "minimum_retrieval_score": 0.85,
+        "minimum_answer_score": 0.85,
+        "minimum_task_score": 0.85
+      },
+      "notes": "Current metadata should win over stale runtime notes."
+    },
+    {
+      "task_id": "artifact-paraphrase-search-spelunking",
+      "suite": "deterministic_core",
+      "tier": "full",
+      "query": "What kind of expensive repo spelunking should durable memory prevent?",
+      "task_type": "artifact_recall",
+      "difficulty": "medium",
+      "gold_facts": [
+        {
+          "key": "search_cost",
+          "match": "any_contains",
+          "values": [
+            "token-hungry broad search",
+            "reduce token-hungry broad search"
+          ]
+        }
+      ],
+      "acceptable_support_sets": [
+        {
+          "source_ids": ["artifact:README.md"]
+        }
+      ],
+      "distractor_source_ids": [],
+      "budgets": {
+        "max_retrieval_calls": 2,
+        "max_returned_context_chars": 320,
+        "max_selected_items": 1
+      },
+      "hard_fail_rules": ["missing_provenance", "budget_overrun"],
+      "baseline_expectation": {
+        "minimum_treatment_accuracy": 0.8,
+        "minimum_evidence_coverage": 0.8,
+        "minimum_retrieval_score": 0.8,
+        "minimum_answer_score": 0.8,
+        "minimum_task_score": 0.8
+      },
+      "notes": "Paraphrased queries should still recover the README objective."
+    },
+    {
+      "task_id": "multihop-transcripts-to-usable-memory",
+      "suite": "deterministic_core",
+      "tier": "full",
+      "query": "What two ingredients make imported transcripts usable memory?",
+      "task_type": "multi_hop_recall",
+      "difficulty": "hard",
+      "gold_facts": [
+        {
+          "key": "history_ingredient_one",
+          "match": "all_contains",
+          "values": ["source evidence"]
+        },
+        {
+          "key": "history_ingredient_two",
+          "match": "all_contains",
+          "values": ["durable memories"]
+        }
+      ],
+      "acceptable_support_sets": [
+        {
+          "source_ids": ["artifact:docs/history.md", "thread:History import gap"]
+        }
+      ],
+      "distractor_source_ids": [],
+      "budgets": {
+        "max_retrieval_calls": 2,
+        "max_returned_context_chars": 520,
+        "max_selected_items": 4
+      },
+      "hard_fail_rules": ["missing_provenance", "budget_overrun"],
+      "baseline_expectation": {
+        "minimum_treatment_accuracy": 0.85,
+        "minimum_evidence_coverage": 0.85,
+        "minimum_retrieval_score": 0.85,
+        "minimum_answer_score": 0.85,
+        "minimum_task_score": 0.85
+      },
+      "notes": "Multi-hop retrieval should join docs and history-derived memory without gold-guided expansion."
+    },
+    {
+      "task_id": "artifact-tight-budget-answer-style",
+      "suite": "deterministic_core",
+      "tier": "full",
+      "query": "What answer style keeps benchmark context usable under a tight budget?",
+      "task_type": "artifact_recall",
+      "difficulty": "medium",
+      "gold_facts": [
+        {
+          "key": "answer_style",
+          "match": "all_contains",
+          "values": ["concise evidence-first answers"]
+        }
+      ],
+      "acceptable_support_sets": [
+        {
+          "source_ids": ["artifact:AGENTS.md"]
+        }
+      ],
+      "distractor_source_ids": [],
+      "budgets": {
+        "max_retrieval_calls": 2,
+        "max_returned_context_chars": 240,
+        "max_selected_items": 1
+      },
+      "hard_fail_rules": ["missing_provenance", "budget_overrun"],
+      "baseline_expectation": {
+        "minimum_treatment_accuracy": 0.8,
+        "minimum_evidence_coverage": 0.8,
+        "minimum_retrieval_score": 0.8,
+        "minimum_answer_score": 0.8,
+        "minimum_task_score": 0.8
+      },
+      "notes": "Budget pressure should force a compact artifact-backed answer."
+    }
+  ]
+}

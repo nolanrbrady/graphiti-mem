@@ -9,8 +9,25 @@ import pytest
 
 from graphiti_core.memory.benchmark.__main__ import main as benchmark_main
 from graphiti_core.memory.benchmark.fixtures import get_fixture, get_suite_tasks, list_fixture_catalog
-from graphiti_core.memory.benchmark.models import BENCHMARK_SCHEMA_VERSION, BenchmarkResult
-from graphiti_core.memory.benchmark.runner import benchmark_doctor, compare_results, run_benchmark
+from graphiti_core.memory.benchmark.models import (
+    BENCHMARK_SCHEMA_VERSION,
+    BenchmarkBaselineExpectation,
+    BenchmarkBudget,
+    BenchmarkFactMatch,
+    BenchmarkGoldFact,
+    BenchmarkHardFailRule,
+    BenchmarkResult,
+    BenchmarkRetrievalTrace,
+    BenchmarkSupportSet,
+    BenchmarkTaskFixture,
+    BenchmarkTaskType,
+)
+from graphiti_core.memory.benchmark.runner import (
+    _channel_result,
+    benchmark_doctor,
+    compare_results,
+    run_benchmark,
+)
 from graphiti_core.memory.benchmark.telemetry import (
     count_search_actions_from_rollout,
     read_codex_thread_metrics,
@@ -117,7 +134,9 @@ def test_fixture_catalog_and_suite_expansion() -> None:
     task = get_fixture('artifact-test-command')
     assert task.suite == 'deterministic_core'
     assert task.task_id == 'artifact-test-command'
-    assert task.max_recall_chars > 0
+    assert task.budgets.max_returned_context_chars > 0
+    assert task.gold_facts
+    assert task.acceptable_support_sets
 
 
 def test_telemetry_rollout_and_sqlite_metrics(tmp_path: Path) -> None:
@@ -200,19 +219,26 @@ def test_doctor_and_compare_commands(tmp_path: Path, capsys) -> None:
             'tasks': [],
             'aggregate': {
                 'task_count': 0,
-                'accuracy_score': 0.8,
-                'evidence_coverage': 0.8,
-                'token_efficiency_score': 0.2,
-                'search_efficiency_score': 0.1,
-                'artifact_accuracy': 0.8,
-                'history_accuracy': 0.8,
-                'multi_hop_accuracy': 0.8,
-                'mean_recall_chars': 700.0,
-                'mean_control_chars': 1200.0,
+                'mean_task_score': 80.0,
+                'mean_task_score_normalized': 0.8,
+                'mean_retrieval_score': 0.8,
+                'mean_attribution_score': 0.8,
+                'mean_answer_score': 0.8,
+                'mean_capability_score': 0.8,
+                'mean_efficiency_score': 1.0,
+                'artifact_task_score': 80.0,
+                'history_task_score': 80.0,
+                'multi_hop_task_score': 80.0,
+                'budget_failure_count': 0,
+                'provenance_failure_count': 0,
+                'support_failure_count': 0,
+                'unsupported_claim_failure_count': 0,
+                'mean_returned_context_chars': 700.0,
+                'mean_control_context_chars': 1200.0,
                 'gate_thresholds': {},
             },
             'gate_passed': True,
-            'reward': 0.55,
+            'reward': 0.8,
             'failure_reasons': [],
         }
     )
@@ -220,18 +246,20 @@ def test_doctor_and_compare_commands(tmp_path: Path, capsys) -> None:
         update={
             'aggregate': first.aggregate.model_copy(
                 update={
-                    'accuracy_score': 0.85,
-                    'evidence_coverage': 0.82,
-                    'token_efficiency_score': 0.3,
-                    'search_efficiency_score': 0.15,
+                    'mean_task_score': 86.0,
+                    'mean_task_score_normalized': 0.86,
+                    'mean_retrieval_score': 0.85,
+                    'mean_attribution_score': 0.82,
+                    'mean_answer_score': 0.84,
+                    'mean_capability_score': 0.84,
                 }
             ),
-            'reward': 0.61,
+            'reward': 0.86,
         }
     )
     comparison = compare_results(first, second)
     assert comparison.reward_delta == pytest.approx(0.06)
-    assert comparison.aggregate_deltas['accuracy_score'] == pytest.approx(0.05)
+    assert comparison.aggregate_deltas['mean_task_score'] == pytest.approx(6.0)
 
     baseline_path = tmp_path / 'baseline.json'
     candidate_path = tmp_path / 'candidate.json'
@@ -254,6 +282,7 @@ async def test_run_benchmark_smoke_suite() -> None:
     assert result.gate_passed is True
     assert result.reward is not None
     assert all(task.treatment.context for task in result.tasks)
+    assert all(task.treatment.retrieval_trace.candidate_ids for task in result.tasks)
 
 
 @pytest.mark.asyncio
@@ -288,3 +317,152 @@ async def test_run_benchmark_dogfood_mode(tmp_path: Path, monkeypatch: pytest.Mo
     assert result.config['mode'] == 'dogfood'
     assert result.aggregate.task_count >= 4
     assert any(task.task_type.value == 'history_recall' for task in result.tasks)
+
+
+def test_channel_result_requires_provenance_for_hard_failures() -> None:
+    fixture = BenchmarkTaskFixture(
+        task_id='missing-provenance',
+        suite='deterministic_core',
+        tier='smoke',
+        query='What command should run?',
+        task_type=BenchmarkTaskType.artifact_recall,
+        difficulty='easy',
+        gold_facts=[BenchmarkGoldFact(key='command', values=['make test'])],
+        acceptable_support_sets=[BenchmarkSupportSet(source_ids=['artifact:README.md'])],
+        budgets=BenchmarkBudget(max_retrieval_calls=2, max_returned_context_chars=200, max_selected_items=1),
+        hard_fail_rules=[BenchmarkHardFailRule.missing_provenance],
+        baseline_expectation=BenchmarkBaselineExpectation(
+            minimum_treatment_accuracy=0.0,
+            minimum_evidence_coverage=0.0,
+            minimum_retrieval_score=0.0,
+            minimum_answer_score=0.0,
+            minimum_task_score=0.0,
+        ),
+    )
+    trace = BenchmarkRetrievalTrace(
+        retrieval_calls=1,
+        retrieval_queries=['What command should run?'],
+        candidate_ids=['artifact:README.md'],
+        selected_evidence_ids=['artifact:README.md'],
+        provenance_ids=[],
+        selected_item_count=1,
+        candidate_count=1,
+    )
+    result = _channel_result(fixture, '- Use `make test`.', trace)
+    assert result.answer_score == pytest.approx(1.0)
+    assert result.capability_score == pytest.approx(0.0)
+    assert 'missing_provenance' in result.hard_failures
+
+
+def test_channel_result_distractor_zeroes_attribution() -> None:
+    fixture = BenchmarkTaskFixture(
+        task_id='wrong-support',
+        suite='deterministic_core',
+        tier='smoke',
+        query='What is current?',
+        task_type=BenchmarkTaskType.artifact_recall,
+        difficulty='easy',
+        gold_facts=[BenchmarkGoldFact(key='target', values=['make benchmark-memory'])],
+        acceptable_support_sets=[BenchmarkSupportSet(source_ids=['artifact:Makefile'])],
+        distractor_source_ids=['artifact:docs/legacy-benchmark.md'],
+        budgets=BenchmarkBudget(max_retrieval_calls=2, max_returned_context_chars=300, max_selected_items=1),
+        hard_fail_rules=[BenchmarkHardFailRule.wrong_support],
+        baseline_expectation=BenchmarkBaselineExpectation(
+            minimum_treatment_accuracy=0.0,
+            minimum_evidence_coverage=0.0,
+            minimum_retrieval_score=0.0,
+            minimum_answer_score=0.0,
+            minimum_task_score=0.0,
+        ),
+    )
+    trace = BenchmarkRetrievalTrace(
+        retrieval_calls=1,
+        retrieval_queries=['What is current?'],
+        candidate_ids=['artifact:Makefile', 'artifact:docs/legacy-benchmark.md'],
+        selected_evidence_ids=['artifact:docs/legacy-benchmark.md'],
+        provenance_ids=['artifact:docs/legacy-benchmark.md'],
+        selected_item_count=1,
+        candidate_count=2,
+    )
+    result = _channel_result(fixture, '- legacy target', trace)
+    assert result.attribution_score == pytest.approx(0.0)
+    assert result.capability_score == pytest.approx(0.0)
+    assert 'wrong_support' in result.hard_failures
+
+
+def test_channel_result_paraphrase_fact_matching() -> None:
+    fixture = BenchmarkTaskFixture(
+        task_id='paraphrase',
+        suite='deterministic_core',
+        tier='smoke',
+        query='What search should memory prevent?',
+        task_type=BenchmarkTaskType.artifact_recall,
+        difficulty='easy',
+        gold_facts=[
+            BenchmarkGoldFact(
+                key='search_cost',
+                values=['token-hungry broad search', 'reduce token-hungry broad search'],
+                match=BenchmarkFactMatch.any_contains,
+            )
+        ],
+        acceptable_support_sets=[BenchmarkSupportSet(source_ids=['artifact:README.md'])],
+        budgets=BenchmarkBudget(max_retrieval_calls=2, max_returned_context_chars=300, max_selected_items=1),
+        hard_fail_rules=[],
+        baseline_expectation=BenchmarkBaselineExpectation(
+            minimum_treatment_accuracy=0.0,
+            minimum_evidence_coverage=0.0,
+            minimum_retrieval_score=0.0,
+            minimum_answer_score=0.0,
+            minimum_task_score=0.0,
+        ),
+    )
+    trace = BenchmarkRetrievalTrace(
+        retrieval_calls=1,
+        retrieval_queries=['What search should memory prevent?'],
+        candidate_ids=['artifact:README.md'],
+        selected_evidence_ids=['artifact:README.md'],
+        provenance_ids=['artifact:README.md'],
+        selected_item_count=1,
+        candidate_count=1,
+    )
+    result = _channel_result(
+        fixture,
+        '- Graphiti should reduce token-hungry broad search before broad repo spelunking.',
+        trace,
+    )
+    assert result.answer_score == pytest.approx(1.0)
+    assert result.capability_score > 0
+
+
+def test_channel_result_budget_overrun_zeroes_task_score() -> None:
+    fixture = BenchmarkTaskFixture(
+        task_id='budget-overrun',
+        suite='deterministic_core',
+        tier='smoke',
+        query='How should answers be formatted?',
+        task_type=BenchmarkTaskType.artifact_recall,
+        difficulty='easy',
+        gold_facts=[BenchmarkGoldFact(key='style', values=['concise evidence-first answers'])],
+        acceptable_support_sets=[BenchmarkSupportSet(source_ids=['artifact:AGENTS.md'])],
+        budgets=BenchmarkBudget(max_retrieval_calls=1, max_returned_context_chars=40, max_selected_items=1),
+        hard_fail_rules=[BenchmarkHardFailRule.budget_overrun],
+        baseline_expectation=BenchmarkBaselineExpectation(
+            minimum_treatment_accuracy=0.0,
+            minimum_evidence_coverage=0.0,
+            minimum_retrieval_score=0.0,
+            minimum_answer_score=0.0,
+            minimum_task_score=0.0,
+        ),
+    )
+    trace = BenchmarkRetrievalTrace(
+        retrieval_calls=2,
+        retrieval_queries=['How should answers be formatted?', 'fallback'],
+        candidate_ids=['artifact:AGENTS.md'],
+        selected_evidence_ids=['artifact:AGENTS.md'],
+        provenance_ids=['artifact:AGENTS.md'],
+        selected_item_count=1,
+        candidate_count=1,
+    )
+    result = _channel_result(fixture, '- concise evidence-first answers', trace)
+    assert result.efficiency_score == pytest.approx(0.0)
+    assert result.task_score == pytest.approx(0.0)

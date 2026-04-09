@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 
 from graphiti_core.memory.config import detect_project_root
 from graphiti_core.memory.engine import MemoryEngine
-from graphiti_core.memory.models import MEMORY_KIND_PRIORITY, MemoryKind
+from graphiti_core.memory.models import MEMORY_KIND_PRIORITY, MemoryKind, ParsedMemoryEpisode
 
 from .corpus import (
     HomeOverride,
@@ -25,41 +25,51 @@ from .corpus import (
 from .fixtures import get_fixture, get_suite_tasks, list_fixture_catalog
 from .models import (
     BenchmarkAggregateResult,
+    BenchmarkBaselineExpectation,
+    BenchmarkBudget,
     BenchmarkChannelResult,
     BenchmarkComparison,
     BenchmarkDoctorResult,
+    BenchmarkFactMatch,
+    BenchmarkGoldFact,
+    BenchmarkHardFailRule,
     BenchmarkResult,
-    BenchmarkBaselineExpectation,
+    BenchmarkRetrievalTrace,
+    BenchmarkSupportSet,
     BenchmarkTaskDelta,
     BenchmarkTaskFixture,
     BenchmarkTaskResult,
     BenchmarkTaskType,
-    BenchmarkTextCheck,
-    TextCheckKind,
+    artifact_source_id,
+    coerce_source_id,
+    memory_source_id,
+    session_source_id,
+    thread_source_id,
 )
 from .scoring import (
+    budget_overruns,
     count_context_items,
     estimate_tokens,
-    overall_accuracy_score,
-    reduction_ratio,
-    required_source_coverage,
-    score_checks,
-    shortcut_hits,
+    score_attribution,
+    score_facts,
+    score_retrieval,
     tokenize_query,
 )
 from .telemetry import discover_codex_state_db
 
 STATIC_GATE_THRESHOLDS = {
-    'artifact_accuracy': 0.75,
-    'history_accuracy': 0.75,
-    'multi_hop_accuracy': 0.75,
-    'evidence_coverage': 0.75,
+    'artifact_task_score': 75.0,
+    'history_task_score': 75.0,
+    'multi_hop_task_score': 75.0,
+    'mean_retrieval_score': 0.75,
+    'mean_attribution_score': 0.75,
+    'mean_answer_score': 0.75,
 }
 BASELINE_TOLERANCE = {
-    'artifact_accuracy': -0.02,
-    'history_accuracy': -0.02,
-    'multi_hop_accuracy': 0.0,
-    'evidence_coverage': -0.02,
+    'mean_task_score_normalized': -0.02,
+    'mean_retrieval_score': -0.02,
+    'mean_attribution_score': -0.02,
+    'mean_answer_score': -0.02,
 }
 
 
@@ -67,113 +77,37 @@ def _normalize(text: str) -> str:
     return text.lower()
 
 
-def _matching_snippet(text: str, query: str, max_len: int = 220) -> str:
+def _dedupe_preserve(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(value for value in values if value))
+
+
+def _mean(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    return sum(values) / len(values)
+
+
+def _matching_snippet(text: str, query: str, *, max_len: int = 220) -> str:
     tokens = tokenize_query(query)
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    best_line = text.strip().replace('\n', ' ')[:max_len]
-    best_score = -1
-    for line in lines:
-        normalized = line.lower()
-        score = sum(1 for token in tokens if token in normalized)
-        if query.lower() in normalized:
-            score += max(2, len(tokens))
-        if score > best_score:
-            best_score = score
-            best_line = line[:max_len]
-    return best_line
-
-
-def _naive_control_context(query: str, sources: list[BaselineSource]) -> tuple[str, int]:
-    tokens = tokenize_query(query)
-    scored: list[tuple[int, BaselineSource]] = []
-    for source in sources:
-        haystack = source.content.lower()
-        score = sum(1 for token in tokens if token in haystack)
-        if query.lower() in haystack:
-            score += max(2, len(tokens))
-        if score > 0:
-            scored.append((score, source))
-
-    scored.sort(key=lambda item: (-item[0], item[1].key))
-    lines = ['Baseline Source Scan']
-    for _, source in scored[:6]:
-        snippet = _matching_snippet(source.content, query)
-        lines.append(f'- [{source.source_type}] {source.key} | snippet={snippet}')
-    return '\n'.join(lines), len(sources)
-
-
-def _required_source_bonus(text: str, required_sources: list[str]) -> int:
-    normalized = _normalize(text)
-    bonus = 0
-    for source in required_sources:
-        if _normalize(source) in normalized:
-            bonus += 20
-    return bonus
-
-
-def _check_bonus(text: str, checks: list[BenchmarkTextCheck]) -> int:
-    normalized = _normalize(text)
-    bonus = 0
-    for check in checks:
-        values = [_normalize(value) for value in check.values]
-        if check.kind is TextCheckKind.contains and all(value in normalized for value in values):
-            bonus += 10
-        elif check.kind is TextCheckKind.any_contains and any(value in normalized for value in values):
-            bonus += 8
-        elif check.kind is TextCheckKind.exact and any(value == normalized for value in values):
-            bonus += 12
-    return bonus
-
-
-def _preferred_terms(fixture: BenchmarkTaskFixture) -> list[str]:
-    terms: list[str] = []
-    for check in [*fixture.gold_answer_checks, *fixture.gold_evidence_checks]:
-        terms.extend(check.values)
-    terms.extend(fixture.required_sources)
-    return [term for term in terms if term]
-
-
-def _value_bonus(text: str, checks: list[BenchmarkTextCheck], weight: int) -> int:
-    normalized = _normalize(text)
-    return weight * sum(1 for check in checks for value in check.values if _normalize(value) in normalized)
-
-
-def _best_snippet(
-    engine: MemoryEngine,
-    text: str,
-    fixture: BenchmarkTaskFixture,
-    *,
-    max_len: int,
-) -> str:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
         return text.replace('\n', ' ')[:max_len]
 
-    query_tokens = tokenize_query(fixture.query)
     best_line = lines[0]
-    best_score = float('-inf')
+    best_score = -1
+    normalized_query = query.lower()
     for line in lines:
-        normalized = line.lower()
-        score = 0
-        answer_score, _ = score_checks(line, fixture.gold_answer_checks)
-        evidence_score, _ = score_checks(line, fixture.gold_evidence_checks)
-        score += 120 * answer_score
-        score += 40 * evidence_score
-        score += _value_bonus(line, fixture.gold_answer_checks, 28)
-        score += _value_bonus(line, fixture.gold_evidence_checks, 10)
-        score += 12 * sum(
-            1 for source in fixture.required_sources if source and source.lower() in normalized
-        )
-        score += 2 * sum(1 for token in query_tokens if token in normalized)
-        if fixture.query.lower() in normalized:
-            score += max(4, len(query_tokens))
+        normalized_line = line.lower()
+        score = sum(1 for token in tokens if token in normalized_line)
+        if normalized_query in normalized_line:
+            score += max(2, len(tokens))
         if score > best_score:
             best_score = score
             best_line = line
     return best_line[:max_len]
 
 
-def _artifact_text(engine: MemoryEngine, artifact) -> str:
+def _artifact_text(engine: MemoryEngine, artifact: ParsedMemoryEpisode) -> str:
     artifact_path = artifact.artifact_path or artifact.raw_name or ''
     if artifact_path:
         candidate = engine.project.root / artifact_path
@@ -182,106 +116,215 @@ def _artifact_text(engine: MemoryEngine, artifact) -> str:
     return artifact.details or artifact.summary
 
 
-def _rank_memory(engine: MemoryEngine, fixture: BenchmarkTaskFixture, memory) -> int:
-    haystack = ' '.join(
-        [
-            memory.summary,
-            memory.details,
-            memory.artifact_path,
-            memory.thread_title,
-            memory.source_agent,
-        ]
-    )
-    return (
-        engine._memory_overlap_score(memory, fixture.query)
-        + _required_source_bonus(haystack, fixture.required_sources)
-        + _check_bonus(haystack, fixture.gold_answer_checks)
-        + _check_bonus(haystack, fixture.gold_evidence_checks)
-    )
+def _memory_primary_item_id(memory: ParsedMemoryEpisode) -> str:
+    if memory.kind is MemoryKind.index_artifact and memory.artifact_path:
+        return artifact_source_id(memory.artifact_path)
+    return f'episode:{memory.uuid}'
 
 
-def _compact_memory_line(engine: MemoryEngine, memory, fixture: BenchmarkTaskFixture) -> str:
-    detail = _best_snippet(engine, memory.details or memory.summary, fixture, max_len=140)
-    parts = [f'[{memory.kind.value}] {memory.summary}']
+def _memory_provenance_ids(memory: ParsedMemoryEpisode) -> list[str]:
+    provenance_ids = [memory_source_id(memory.kind.value, memory.summary)]
+    if memory.artifact_path:
+        provenance_ids.append(artifact_source_id(memory.artifact_path))
     if memory.thread_title:
-        parts.append(f'thread={memory.thread_title[:80]}')
+        provenance_ids.append(thread_source_id(memory.thread_title))
+    if memory.session_id:
+        provenance_ids.append(session_source_id(memory.session_id))
+    return _dedupe_preserve(provenance_ids)
+
+
+def _memory_rank(engine: MemoryEngine, memory: ParsedMemoryEpisode, query: str) -> tuple[int, int, float, str]:
+    return (
+        engine._memory_overlap_score(memory, query),
+        -MEMORY_KIND_PRIORITY[memory.kind],
+        memory.created_at.timestamp() if memory.created_at is not None else 0.0,
+        _memory_primary_item_id(memory),
+    )
+
+
+def _default_selected_items(task_type: BenchmarkTaskType) -> int:
+    if task_type is BenchmarkTaskType.artifact_recall:
+        return 1
+    if task_type is BenchmarkTaskType.history_recall:
+        return 2
+    return 4
+
+
+def _selection_cap(task_type: BenchmarkTaskType, budget: BenchmarkBudget) -> int:
+    if budget.max_selected_items > 0:
+        return budget.max_selected_items
+    return _default_selected_items(task_type)
+
+
+def _select_memories(
+    ranked_memories: list[ParsedMemoryEpisode],
+    *,
+    task_type: BenchmarkTaskType,
+    budget: BenchmarkBudget,
+) -> list[ParsedMemoryEpisode]:
+    cap = _selection_cap(task_type, budget)
+    if not ranked_memories or cap <= 0:
+        return []
+
+    artifacts = [memory for memory in ranked_memories if memory.kind is MemoryKind.index_artifact]
+    non_artifacts = [memory for memory in ranked_memories if memory.kind is not MemoryKind.index_artifact]
+    selected: list[ParsedMemoryEpisode] = []
+
+    if task_type is BenchmarkTaskType.artifact_recall:
+        selected.extend(artifacts[:cap] if artifacts else ranked_memories[:cap])
+        return selected[:cap]
+
+    if task_type is BenchmarkTaskType.history_recall:
+        selected.extend(non_artifacts[:cap] if non_artifacts else ranked_memories[:cap])
+        return selected[:cap]
+
+    memory_cap = min(2, cap)
+    artifact_cap = min(2, max(0, cap - memory_cap))
+    selected.extend(non_artifacts[:memory_cap])
+    selected.extend(artifacts[:artifact_cap])
+    seen = {memory.uuid for memory in selected}
+    if len(selected) < cap:
+        for memory in ranked_memories:
+            if memory.uuid in seen:
+                continue
+            selected.append(memory)
+            seen.add(memory.uuid)
+            if len(selected) >= cap:
+                break
+    return selected[:cap]
+
+
+def _source_rank(query: str, source: BaselineSource) -> tuple[int, str]:
+    tokens = tokenize_query(query)
+    haystack = source.content.lower()
+    score = sum(1 for token in tokens if token in haystack)
+    if query.lower() in haystack:
+        score += max(2, len(tokens))
+    return score, source.key
+
+
+def _source_item_id(source: BaselineSource) -> str:
+    return f'{source.source_type}:{source.key}'
+
+
+def _source_line(source: BaselineSource, query: str) -> str:
+    snippet = _matching_snippet(source.content, query, max_len=180)
+    provenance = ','.join(source.provenance_ids) or 'none'
+    return (
+        f'- [{source.source_type}] {source.key} | provenance={provenance} | snippet={snippet}'
+    )
+
+
+def _memory_line(engine: MemoryEngine, memory: ParsedMemoryEpisode, query: str) -> str:
+    provenance = ','.join(_memory_provenance_ids(memory))
+    if memory.kind is MemoryKind.index_artifact:
+        snippet = _matching_snippet(_artifact_text(engine, memory), query, max_len=180)
+        path = memory.artifact_path or memory.raw_name or memory.summary
+        return f'- {path} | provenance={provenance} | snippet={snippet}'
+
+    detail = _matching_snippet(memory.details or memory.summary, query, max_len=160)
+    parts = [f'[{memory.kind.value}] {memory.summary}', f'provenance={provenance}']
     if memory.source_agent:
         parts.append(f'agent={memory.source_agent}')
+    if memory.thread_title:
+        parts.append(f'thread={memory.thread_title[:80]}')
     if detail and detail not in memory.summary:
         parts.append(f'detail={detail}')
     return '- ' + ' | '.join(parts)
 
 
-def _compact_artifact_line(engine: MemoryEngine, artifact, fixture: BenchmarkTaskFixture) -> str:
-    snippet = _best_snippet(engine, _artifact_text(engine, artifact), fixture, max_len=160)
-    path = artifact.artifact_path or artifact.raw_name or artifact.summary
-    return f'- {path} | {snippet}'
+def _fit_sections_to_budget(
+    sections: list[tuple[str, list[tuple[str, str, list[str]]]]],
+    budget: int,
+) -> tuple[str, list[str], list[str]]:
+    kept_lines: list[str] = []
+    selected_evidence_ids: list[str] = []
+    provenance_ids: list[str] = []
+
+    for header, entries in sections:
+        section_lines: list[str] = []
+        section_selected: list[str] = []
+        section_provenance: list[str] = []
+        for line, item_id, line_provenance in entries:
+            candidate_lines = [
+                *kept_lines,
+                *([header] if section_lines == [] else []),
+                *section_lines,
+                line,
+            ]
+            if len('\n'.join(candidate_lines)) > budget:
+                break
+            if section_lines == []:
+                section_lines.append(header)
+            section_lines.append(line)
+            section_selected.append(item_id)
+            section_provenance.extend(line_provenance)
+        if section_lines:
+            if kept_lines:
+                candidate_lines = [*kept_lines, '', *section_lines]
+                if len('\n'.join(candidate_lines)) > budget:
+                    break
+                kept_lines.append('')
+            kept_lines.extend(section_lines)
+            selected_evidence_ids.extend(section_selected)
+            provenance_ids.extend(section_provenance)
+
+    if not kept_lines:
+        return 'No relevant memory found.', [], []
+    return '\n'.join(kept_lines), selected_evidence_ids, _dedupe_preserve(provenance_ids)
 
 
-async def _extend_with_targeted_results(
+def _build_treatment_context(
     engine: MemoryEngine,
+    selected_memories: list[ParsedMemoryEpisode],
     fixture: BenchmarkTaskFixture,
-    parsed_episodes: list,
-    seen_episodes: set[str],
-) -> None:
-    missing_required_sources = [
-        source
-        for source in fixture.required_sources
-        if not any(
-            _normalize(source)
-            in _normalize(
-                ' '.join(
-                    [
-                        episode.summary,
-                        episode.details,
-                        episode.artifact_path,
-                        episode.thread_title,
-                        episode.raw_name,
-                    ]
-                )
+) -> tuple[str, list[str], list[str]]:
+    non_artifacts = [memory for memory in selected_memories if memory.kind is not MemoryKind.index_artifact]
+    artifacts = [memory for memory in selected_memories if memory.kind is MemoryKind.index_artifact]
+    sections: list[tuple[str, list[tuple[str, str, list[str]]]]] = []
+
+    if non_artifacts:
+        sections.append(
+            (
+                'Relevant Memory',
+                [
+                    (
+                        _memory_line(engine, memory, fixture.query),
+                        _memory_primary_item_id(memory),
+                        _memory_provenance_ids(memory),
+                    )
+                    for memory in non_artifacts
+                ],
             )
-            for episode in parsed_episodes
         )
-    ]
+    if artifacts:
+        sections.append(
+            (
+                'Supporting Artifacts',
+                [
+                    (
+                        _memory_line(engine, memory, fixture.query),
+                        _memory_primary_item_id(memory),
+                        _memory_provenance_ids(memory),
+                    )
+                    for memory in artifacts
+                ],
+            )
+        )
 
-    targeted_queries = list(dict.fromkeys([*missing_required_sources, *_preferred_terms(fixture)]))
-    for query in targeted_queries[:4]:
-        targeted = await engine._search(query, limit=4)
-        for episode in targeted.episodes:
-            if episode.uuid in seen_episodes:
-                continue
-            seen_episodes.add(episode.uuid)
-            parsed = engine._parse_memory_episode(episode)
-            if parsed is not None:
-                parsed_episodes.append(parsed)
-
-
-def _trim_to_budget(lines: list[str], budget: int) -> str:
-    if not lines:
-        return 'No relevant memory found.'
-
-    kept: list[str] = []
-    current_len = 0
-    for line in lines:
-        line_len = len(line) + (1 if kept else 0)
-        if kept and current_len + line_len > budget:
-            break
-        kept.append(line)
-        current_len += line_len
-
-    if not kept:
-        return lines[0][:budget]
-    return '\n'.join(kept)
+    return _fit_sections_to_budget(sections, fixture.budgets.max_returned_context_chars)
 
 
-async def _compact_treatment_context(
+async def _collect_treatment_channel(
     engine: MemoryEngine,
     fixture: BenchmarkTaskFixture,
-) -> str:
+) -> tuple[str, BenchmarkRetrievalTrace]:
     search_limit = 6 if fixture.task_type is BenchmarkTaskType.artifact_recall else 8
     results = await engine._search(fixture.query, limit=search_limit)
+    retrieval_calls = 1
+    retrieval_queries = [fixture.query]
 
-    parsed_episodes = []
+    parsed_memories: list[ParsedMemoryEpisode] = []
     seen_episodes: set[str] = set()
     for episode in results.episodes:
         if episode.uuid in seen_episodes:
@@ -289,121 +332,199 @@ async def _compact_treatment_context(
         seen_episodes.add(episode.uuid)
         parsed = engine._parse_memory_episode(episode)
         if parsed is not None:
-            parsed_episodes.append(parsed)
+            parsed_memories.append(parsed)
 
-    if len(parsed_episodes) < 4:
+    if len(parsed_memories) < _default_selected_items(fixture.task_type):
         fallback = await engine._fallback_memory_episodes(
             fixture.query,
-            limit=6,
+            limit=max(search_limit, _default_selected_items(fixture.task_type) * 2),
             exclude_ids=seen_episodes,
         )
+        retrieval_calls += 1
+        retrieval_queries.append(f'fallback:{fixture.query}')
         for episode in fallback:
             if episode.uuid in seen_episodes:
                 continue
             seen_episodes.add(episode.uuid)
-            parsed_episodes.append(episode)
+            parsed_memories.append(episode)
 
-    await _extend_with_targeted_results(engine, fixture, parsed_episodes, seen_episodes)
-
-    artifact_memories = [memory for memory in parsed_episodes if memory.kind is MemoryKind.index_artifact]
-    other_memories = [memory for memory in parsed_episodes if memory.kind is not MemoryKind.index_artifact]
-
-    other_memories.sort(
-        key=lambda memory: (
-            -_rank_memory(engine, fixture, memory),
-            MEMORY_KIND_PRIORITY[memory.kind],
-        )
+    ranked_memories = sorted(
+        parsed_memories,
+        key=lambda memory: _memory_rank(engine, memory, fixture.query),
+        reverse=True,
     )
-    artifact_memories.sort(
-        key=lambda memory: (
-            -_rank_memory(engine, fixture, memory),
-            memory.artifact_path or memory.raw_name,
-        )
+    selected_memories = _select_memories(
+        ranked_memories,
+        task_type=fixture.task_type,
+        budget=fixture.budgets,
     )
+    context, selected_evidence_ids, provenance_ids = _build_treatment_context(
+        engine,
+        selected_memories,
+        fixture,
+    )
+    candidate_ids = _dedupe_preserve(
+        [
+            provenance_id
+            for memory in ranked_memories
+            for provenance_id in _memory_provenance_ids(memory)
+        ]
+    )
+    trace = BenchmarkRetrievalTrace(
+        retrieval_calls=retrieval_calls,
+        retrieval_queries=retrieval_queries,
+        candidate_ids=candidate_ids,
+        selected_evidence_ids=selected_evidence_ids,
+        provenance_ids=provenance_ids,
+        selected_item_count=len(selected_evidence_ids),
+        candidate_count=len(candidate_ids),
+    )
+    return context, trace
 
-    memory_limit = 1
-    artifact_limit = 1
-    if fixture.task_type is BenchmarkTaskType.history_recall:
-        memory_limit = 2
-        artifact_limit = 1
-    elif fixture.task_type is BenchmarkTaskType.multi_hop_recall:
-        memory_limit = 2
-        artifact_limit = 2
 
-    lines: list[str] = []
-    selected_memories = other_memories[:memory_limit]
-    if selected_memories:
-        lines.append('Relevant Memory')
-        for memory in selected_memories:
-            lines.append(_compact_memory_line(engine, memory, fixture))
-
-    preferred_artifacts = [
-        artifact
-        for artifact in artifact_memories
-        if any(
-            source.lower() in (
-                f'{artifact.artifact_path} {artifact.summary} {artifact.details}'.lower()
-            )
-            for source in fixture.required_sources
+def _build_control_context(
+    sources: list[BaselineSource],
+    fixture: BenchmarkTaskFixture,
+) -> tuple[str, BenchmarkRetrievalTrace]:
+    ranked_sources = [
+        source
+        for score, source in sorted(
+            (
+                (_source_rank(fixture.query, source), source)
+                for source in sources
+                if _source_rank(fixture.query, source)[0] > 0
+            ),
+            key=lambda item: (item[0][0], item[0][1]),
+            reverse=True,
         )
     ]
-    selected_artifacts = preferred_artifacts[:artifact_limit]
-    seen_artifact_keys = {
-        artifact.artifact_path or artifact.raw_name or artifact.summary
-        for artifact in selected_artifacts
-    }
-    for artifact in artifact_memories:
-        key = artifact.artifact_path or artifact.raw_name or artifact.summary
-        if key in seen_artifact_keys:
-            continue
-        selected_artifacts.append(artifact)
-        seen_artifact_keys.add(key)
-        if len(selected_artifacts) >= artifact_limit:
-            break
-    if selected_artifacts:
-        if lines:
-            lines.append('')
-        lines.append('Supporting Artifacts')
-        for artifact in selected_artifacts:
-            lines.append(_compact_artifact_line(engine, artifact, fixture))
+    if not ranked_sources:
+        ranked_sources = sources[:]
 
-    if not lines:
-        return 'No relevant memory found.'
+    artifacts = [source for source in ranked_sources if source.source_type == 'artifact']
+    non_artifacts = [source for source in ranked_sources if source.source_type != 'artifact']
+    selected_sources: list[BaselineSource] = []
+    cap = _selection_cap(fixture.task_type, fixture.budgets)
+    if fixture.task_type is BenchmarkTaskType.artifact_recall:
+        selected_sources.extend(artifacts[:cap] if artifacts else ranked_sources[:cap])
+    elif fixture.task_type is BenchmarkTaskType.history_recall:
+        selected_sources.extend(non_artifacts[:cap] if non_artifacts else ranked_sources[:cap])
+    else:
+        selected_sources.extend(non_artifacts[: min(2, cap)])
+        selected_sources.extend(artifacts[: max(0, cap - len(selected_sources))])
+        seen = {source.key for source in selected_sources}
+        for source in ranked_sources:
+            if source.key in seen:
+                continue
+            selected_sources.append(source)
+            seen.add(source.key)
+            if len(selected_sources) >= cap:
+                break
 
-    return _trim_to_budget(lines, fixture.max_recall_chars)
+    sections: list[tuple[str, list[tuple[str, str, list[str]]]]] = []
+    non_artifact_entries = [
+        (_source_line(source, fixture.query), _source_item_id(source), list(source.provenance_ids))
+        for source in selected_sources
+        if source.source_type != 'artifact'
+    ]
+    artifact_entries = [
+        (_source_line(source, fixture.query), _source_item_id(source), list(source.provenance_ids))
+        for source in selected_sources
+        if source.source_type == 'artifact'
+    ]
+    if non_artifact_entries:
+        sections.append(('Baseline Memory Scan', non_artifact_entries))
+    if artifact_entries:
+        sections.append(('Baseline Artifact Scan', artifact_entries))
+    context, selected_evidence_ids, provenance_ids = _fit_sections_to_budget(
+        sections,
+        fixture.budgets.max_returned_context_chars,
+    )
+    trace = BenchmarkRetrievalTrace(
+        retrieval_calls=1,
+        retrieval_queries=[fixture.query],
+        candidate_ids=_dedupe_preserve(
+            [provenance_id for source in ranked_sources for provenance_id in source.provenance_ids]
+        ),
+        selected_evidence_ids=selected_evidence_ids,
+        provenance_ids=provenance_ids,
+        selected_item_count=len(selected_evidence_ids),
+        candidate_count=len(ranked_sources),
+    )
+    return context, trace
 
 
 def _channel_result(
     fixture: BenchmarkTaskFixture,
     context: str,
-    *,
-    search_actions: int,
+    trace: BenchmarkRetrievalTrace,
 ) -> BenchmarkChannelResult:
-    answer_score, matched_answer_checks = score_checks(context, fixture.gold_answer_checks)
-    evidence_score, matched_evidence_checks = score_checks(context, fixture.gold_evidence_checks)
-    source_coverage = required_source_coverage(context, fixture.required_sources)
-    shortcuts = shortcut_hits(context, fixture.disallowed_shortcuts)
-    overall_score = overall_accuracy_score(
-        fixture.task_type,
-        answer_score,
-        evidence_score,
-        source_coverage,
-        shortcuts,
+    answer_score, matched_fact_count = score_facts(context, fixture.gold_facts)
+    retrieval_score = score_retrieval(trace.candidate_ids, fixture.acceptable_support_sets)
+    attribution_score = score_attribution(
+        trace.provenance_ids,
+        fixture.acceptable_support_sets,
+        fixture.distractor_source_ids,
     )
+    overruns = budget_overruns(
+        fixture.budgets,
+        retrieval_calls=trace.retrieval_calls,
+        context_chars=len(context),
+        selected_item_count=trace.selected_item_count,
+    )
+    hard_failures: list[str] = []
+    if BenchmarkHardFailRule.missing_provenance in fixture.hard_fail_rules and not trace.provenance_ids:
+        hard_failures.append('missing_provenance')
+    if BenchmarkHardFailRule.budget_overrun in fixture.hard_fail_rules and overruns:
+        hard_failures.extend(overruns)
+    if BenchmarkHardFailRule.wrong_support in fixture.hard_fail_rules and attribution_score < 1.0:
+        hard_failures.append('wrong_support')
+    if BenchmarkHardFailRule.unsupported_claim in fixture.hard_fail_rules and answer_score < 1.0:
+        hard_failures.append('unsupported_claim')
+
+    efficiency_score = 1.0 if not overruns else 0.0
+    capability_score = retrieval_score * attribution_score * answer_score
+    if hard_failures:
+        capability_score = 0.0
+    task_score = round(100.0 * capability_score * efficiency_score, 6)
+    normalized_task_score = task_score / 100.0
     return BenchmarkChannelResult(
+        retrieval_score=retrieval_score,
+        attribution_score=attribution_score,
         answer_score=answer_score,
-        evidence_score=min(evidence_score, source_coverage),
-        overall_score=overall_score,
-        required_source_coverage=source_coverage,
+        capability_score=capability_score,
+        efficiency_score=efficiency_score,
+        task_score=task_score,
+        normalized_task_score=normalized_task_score,
         task_tokens=estimate_tokens(fixture.query) + estimate_tokens(context),
-        search_actions=search_actions,
+        retrieval_calls=trace.retrieval_calls,
         context_chars=len(context),
         context_items=count_context_items(context),
         context=context,
-        shortcut_hits=shortcuts,
-        matched_answer_checks=matched_answer_checks,
-        matched_evidence_checks=matched_evidence_checks,
+        retrieval_trace=trace,
+        selected_evidence_ids=trace.selected_evidence_ids,
+        provenance_ids=trace.provenance_ids,
+        hard_failures=_dedupe_preserve(hard_failures),
+        matched_fact_count=matched_fact_count,
+        budget_passed=not overruns,
     )
+
+
+def _task_failure_reasons(
+    fixture: BenchmarkTaskFixture,
+    treatment: BenchmarkChannelResult,
+) -> list[str]:
+    expectation: BenchmarkBaselineExpectation = fixture.baseline_expectation
+    failure_reasons = list(treatment.hard_failures)
+    if treatment.retrieval_score < expectation.minimum_retrieval_score:
+        failure_reasons.append('retrieval score below task minimum')
+    if treatment.attribution_score < expectation.minimum_evidence_coverage:
+        failure_reasons.append('attribution score below task minimum')
+    if treatment.answer_score < expectation.minimum_answer_score:
+        failure_reasons.append('answer score below task minimum')
+    if treatment.normalized_task_score < expectation.minimum_task_score:
+        failure_reasons.append('task score below task minimum')
+    return _dedupe_preserve(failure_reasons)
 
 
 def _task_result(
@@ -411,21 +532,7 @@ def _task_result(
     control: BenchmarkChannelResult,
     treatment: BenchmarkChannelResult,
 ) -> BenchmarkTaskResult:
-    failure_reasons: list[str] = []
-    if treatment.context_chars > fixture.max_recall_chars:
-        failure_reasons.append(
-            f'recall context too large ({treatment.context_chars} > {fixture.max_recall_chars})'
-        )
-    if treatment.overall_score < control.overall_score:
-        failure_reasons.append('treatment accuracy regressed versus control')
-    if fixture.baseline_expectation.expect_token_reduction and treatment.task_tokens > control.task_tokens:
-        failure_reasons.append('treatment token estimate regressed versus control')
-    if (
-        fixture.baseline_expectation.expect_search_reduction
-        and treatment.search_actions > control.search_actions
-    ):
-        failure_reasons.append('treatment search actions regressed versus control')
-
+    failure_reasons = _task_failure_reasons(fixture, treatment)
     return BenchmarkTaskResult(
         task_id=fixture.task_id,
         suite=fixture.suite,
@@ -436,23 +543,17 @@ def _task_result(
         control=control,
         treatment=treatment,
         delta=BenchmarkTaskDelta(
-            accuracy_gain=treatment.overall_score - control.overall_score,
-            evidence_gain=treatment.evidence_score - control.evidence_score,
-            token_delta=control.task_tokens - treatment.task_tokens,
-            token_reduction_ratio=reduction_ratio(control.task_tokens, treatment.task_tokens),
-            search_delta=control.search_actions - treatment.search_actions,
-            search_reduction_ratio=reduction_ratio(control.search_actions, treatment.search_actions),
+            retrieval_gain=treatment.retrieval_score - control.retrieval_score,
+            attribution_gain=treatment.attribution_score - control.attribution_score,
+            answer_gain=treatment.answer_score - control.answer_score,
+            capability_gain=treatment.capability_score - control.capability_score,
+            task_score_gain=treatment.task_score - control.task_score,
+            retrieval_call_delta=control.retrieval_calls - treatment.retrieval_calls,
             context_char_delta=control.context_chars - treatment.context_chars,
         ),
         gate_passed=not failure_reasons,
         failure_reasons=failure_reasons,
     )
-
-
-def _mean(values: list[float]) -> float:
-    if not values:
-        return 0.0
-    return sum(values) / len(values)
 
 
 def _aggregate(results: list[BenchmarkTaskResult]) -> BenchmarkAggregateResult:
@@ -461,24 +562,43 @@ def _aggregate(results: list[BenchmarkTaskResult]) -> BenchmarkAggregateResult:
         BenchmarkTaskType.history_recall: [],
         BenchmarkTaskType.multi_hop_recall: [],
     }
+    budget_failure_count = 0
+    provenance_failure_count = 0
+    support_failure_count = 0
+    unsupported_claim_failure_count = 0
     for result in results:
-        by_type[result.task_type].append(result.treatment.overall_score)
+        by_type[result.task_type].append(result.treatment.task_score)
+        for failure in result.treatment.hard_failures:
+            if failure.startswith('budget_overrun'):
+                budget_failure_count += 1
+            elif failure == 'missing_provenance':
+                provenance_failure_count += 1
+            elif failure == 'wrong_support':
+                support_failure_count += 1
+            elif failure == 'unsupported_claim':
+                unsupported_claim_failure_count += 1
 
+    mean_task_score = _mean([result.treatment.task_score for result in results])
     return BenchmarkAggregateResult(
         task_count=len(results),
-        accuracy_score=_mean([result.treatment.overall_score for result in results]),
-        evidence_coverage=_mean([result.treatment.evidence_score for result in results]),
-        token_efficiency_score=_mean(
-            [max(0.0, result.delta.token_reduction_ratio) for result in results]
+        mean_task_score=mean_task_score,
+        mean_task_score_normalized=mean_task_score / 100.0,
+        mean_retrieval_score=_mean([result.treatment.retrieval_score for result in results]),
+        mean_attribution_score=_mean([result.treatment.attribution_score for result in results]),
+        mean_answer_score=_mean([result.treatment.answer_score for result in results]),
+        mean_capability_score=_mean([result.treatment.capability_score for result in results]),
+        mean_efficiency_score=_mean([result.treatment.efficiency_score for result in results]),
+        artifact_task_score=_mean(by_type[BenchmarkTaskType.artifact_recall]),
+        history_task_score=_mean(by_type[BenchmarkTaskType.history_recall]),
+        multi_hop_task_score=_mean(by_type[BenchmarkTaskType.multi_hop_recall]),
+        budget_failure_count=budget_failure_count,
+        provenance_failure_count=provenance_failure_count,
+        support_failure_count=support_failure_count,
+        unsupported_claim_failure_count=unsupported_claim_failure_count,
+        mean_returned_context_chars=_mean(
+            [float(result.treatment.context_chars) for result in results]
         ),
-        search_efficiency_score=_mean(
-            [max(0.0, result.delta.search_reduction_ratio) for result in results]
-        ),
-        artifact_accuracy=_mean(by_type[BenchmarkTaskType.artifact_recall]),
-        history_accuracy=_mean(by_type[BenchmarkTaskType.history_recall]),
-        multi_hop_accuracy=_mean(by_type[BenchmarkTaskType.multi_hop_recall]),
-        mean_recall_chars=_mean([float(result.treatment.context_chars) for result in results]),
-        mean_control_chars=_mean([float(result.control.context_chars) for result in results]),
+        mean_control_context_chars=_mean([float(result.control.context_chars) for result in results]),
         gate_thresholds=STATIC_GATE_THRESHOLDS,
     )
 
@@ -489,24 +609,28 @@ def _gate_failure_reasons(
     baseline: BenchmarkResult | None,
 ) -> list[str]:
     failure_reasons = [reason for result in results for reason in result.failure_reasons]
-
-    if aggregate.artifact_accuracy < STATIC_GATE_THRESHOLDS['artifact_accuracy']:
-        failure_reasons.append('artifact accuracy below static threshold')
-    if aggregate.history_accuracy < STATIC_GATE_THRESHOLDS['history_accuracy']:
-        failure_reasons.append('history accuracy below static threshold')
-    if aggregate.multi_hop_accuracy < STATIC_GATE_THRESHOLDS['multi_hop_accuracy']:
-        failure_reasons.append('multi-hop accuracy below static threshold')
-    if aggregate.evidence_coverage < STATIC_GATE_THRESHOLDS['evidence_coverage']:
-        failure_reasons.append('evidence coverage below static threshold')
+    if aggregate.artifact_task_score < STATIC_GATE_THRESHOLDS['artifact_task_score']:
+        failure_reasons.append('artifact task score below static threshold')
+    if aggregate.history_task_score < STATIC_GATE_THRESHOLDS['history_task_score']:
+        failure_reasons.append('history task score below static threshold')
+    if aggregate.multi_hop_task_score < STATIC_GATE_THRESHOLDS['multi_hop_task_score']:
+        failure_reasons.append('multi-hop task score below static threshold')
+    if aggregate.mean_retrieval_score < STATIC_GATE_THRESHOLDS['mean_retrieval_score']:
+        failure_reasons.append('mean retrieval score below static threshold')
+    if aggregate.mean_attribution_score < STATIC_GATE_THRESHOLDS['mean_attribution_score']:
+        failure_reasons.append('mean attribution score below static threshold')
+    if aggregate.mean_answer_score < STATIC_GATE_THRESHOLDS['mean_answer_score']:
+        failure_reasons.append('mean answer score below static threshold')
 
     if baseline is not None:
         deltas = {
-            'artifact_accuracy': aggregate.artifact_accuracy - baseline.aggregate.artifact_accuracy,
-            'history_accuracy': aggregate.history_accuracy - baseline.aggregate.history_accuracy,
-            'multi_hop_accuracy': aggregate.multi_hop_accuracy
-            - baseline.aggregate.multi_hop_accuracy,
-            'evidence_coverage': aggregate.evidence_coverage
-            - baseline.aggregate.evidence_coverage,
+            'mean_task_score_normalized': aggregate.mean_task_score_normalized
+            - baseline.aggregate.mean_task_score_normalized,
+            'mean_retrieval_score': aggregate.mean_retrieval_score
+            - baseline.aggregate.mean_retrieval_score,
+            'mean_attribution_score': aggregate.mean_attribution_score
+            - baseline.aggregate.mean_attribution_score,
+            'mean_answer_score': aggregate.mean_answer_score - baseline.aggregate.mean_answer_score,
         }
         for key, delta in deltas.items():
             if delta < BASELINE_TOLERANCE[key]:
@@ -565,8 +689,62 @@ def _copy_artifacts_to_temp(
         destination.write_text(source.content)
 
 
-def _make_contains_check(*values: str) -> BenchmarkTextCheck:
-    return BenchmarkTextCheck(kind=TextCheckKind.contains, values=list(values))
+def _default_budget(max_chars: int, task_type: BenchmarkTaskType) -> BenchmarkBudget:
+    return BenchmarkBudget(
+        max_retrieval_calls=2,
+        max_returned_context_chars=max_chars,
+        max_selected_items=_default_selected_items(task_type),
+    )
+
+
+def _default_hard_fail_rules() -> list[BenchmarkHardFailRule]:
+    return [
+        BenchmarkHardFailRule.missing_provenance,
+        BenchmarkHardFailRule.budget_overrun,
+    ]
+
+
+def _all_fact(key: str, *values: str) -> BenchmarkGoldFact:
+    return BenchmarkGoldFact(key=key, values=list(values), match=BenchmarkFactMatch.all_contains)
+
+
+def _any_fact(key: str, *values: str) -> BenchmarkGoldFact:
+    return BenchmarkGoldFact(key=key, values=list(values), match=BenchmarkFactMatch.any_contains)
+
+
+def _support(*references: str) -> list[BenchmarkSupportSet]:
+    return [BenchmarkSupportSet(source_ids=[coerce_source_id(reference) for reference in references])]
+
+
+def _build_dogfood_fixture(
+    *,
+    task_id: str,
+    tier: str,
+    query: str,
+    task_type: BenchmarkTaskType,
+    difficulty: str,
+    facts: list[BenchmarkGoldFact],
+    support_refs: list[str],
+    max_chars: int,
+    notes: str,
+    distractor_refs: list[str] | None = None,
+    baseline_expectation: BenchmarkBaselineExpectation | None = None,
+) -> BenchmarkTaskFixture:
+    return BenchmarkTaskFixture(
+        task_id=task_id,
+        suite='dogfood_local',
+        tier=tier,
+        query=query,
+        task_type=task_type,
+        difficulty=difficulty,
+        gold_facts=facts,
+        acceptable_support_sets=_support(*support_refs),
+        distractor_source_ids=[coerce_source_id(reference) for reference in (distractor_refs or [])],
+        budgets=_default_budget(max_chars, task_type),
+        hard_fail_rules=_default_hard_fail_rules(),
+        baseline_expectation=baseline_expectation or BenchmarkBaselineExpectation(),
+        notes=notes,
+    )
 
 
 def _build_dogfood_tasks(
@@ -575,24 +753,20 @@ def _build_dogfood_tasks(
 ) -> list[BenchmarkTaskFixture]:
     tasks: list[BenchmarkTaskFixture] = []
     smoke_limit = 8
-
     artifacts_by_key = {source.key: source for source in artifact_sources}
 
     readme = artifacts_by_key.get('README.md')
     if readme is not None and 'make test' in readme.content.lower():
         tasks.append(
-            BenchmarkTaskFixture(
+            _build_dogfood_fixture(
                 task_id='dogfood-artifact-tests',
-                suite='dogfood_local',
                 tier='smoke',
                 query='How does this repo expect tests to run?',
                 task_type=BenchmarkTaskType.artifact_recall,
                 difficulty='easy',
-                gold_answer_checks=[_make_contains_check('make test')],
-                gold_evidence_checks=[_make_contains_check('Supporting Artifacts', 'README.md')],
-                required_sources=['README.md'],
-                max_recall_chars=1400,
-                baseline_expectation=BenchmarkBaselineExpectation(),
+                facts=[_all_fact('test_command', 'make test')],
+                support_refs=['README.md'],
+                max_chars=1400,
                 notes='Derived from the current repo README.',
             )
         )
@@ -607,18 +781,15 @@ def _build_dogfood_tasks(
     )
     if mcp_source is not None:
         tasks.append(
-            BenchmarkTaskFixture(
+            _build_dogfood_fixture(
                 task_id='dogfood-artifact-mcp',
-                suite='dogfood_local',
                 tier='smoke',
                 query='What is the Graphiti Codex MCP command for this repo?',
                 task_type=BenchmarkTaskType.artifact_recall,
                 difficulty='easy',
-                gold_answer_checks=[_make_contains_check('graphiti mcp --transport stdio')],
-                gold_evidence_checks=[_make_contains_check(mcp_source.key)],
-                required_sources=[mcp_source.key],
-                max_recall_chars=1400,
-                baseline_expectation=BenchmarkBaselineExpectation(),
+                facts=[_all_fact('mcp_command', 'graphiti mcp --transport stdio')],
+                support_refs=[mcp_source.key],
+                max_chars=1400,
                 notes='Derived from current repo onboarding docs.',
             )
         )
@@ -635,38 +806,30 @@ def _build_dogfood_tasks(
         )
         if requires_line:
             tasks.append(
-                BenchmarkTaskFixture(
+                _build_dogfood_fixture(
                     task_id='dogfood-artifact-python',
-                    suite='dogfood_local',
                     tier='smoke',
                     query='What Python version does this project require?',
                     task_type=BenchmarkTaskType.artifact_recall,
                     difficulty='easy',
-                    gold_answer_checks=[_make_contains_check(requires_line.split('=', 1)[1].strip())],
-                    gold_evidence_checks=[_make_contains_check('pyproject.toml')],
-                    required_sources=['pyproject.toml'],
-                    max_recall_chars=1200,
-                    baseline_expectation=BenchmarkBaselineExpectation(),
+                    facts=[_all_fact('python_version', requires_line.split('=', 1)[1].strip())],
+                    support_refs=['pyproject.toml'],
+                    max_chars=1200,
                     notes='Derived from current repo pyproject metadata.',
                 )
             )
 
     for index, seed in enumerate(history_seeds[:4], start=1):
         tasks.append(
-            BenchmarkTaskFixture(
+            _build_dogfood_fixture(
                 task_id=f'dogfood-history-{index}',
-                suite='dogfood_local',
                 tier='smoke' if index <= 3 else 'full',
                 query=seed.thread_title,
                 task_type=BenchmarkTaskType.history_recall,
                 difficulty='medium',
-                gold_answer_checks=[_make_contains_check(seed.summary)],
-                gold_evidence_checks=[
-                    _make_contains_check(f'agent={seed.source_agent}', f'thread={seed.thread_title[:80]}')
-                ],
-                required_sources=[seed.thread_title[:80]],
-                max_recall_chars=1500,
-                baseline_expectation=BenchmarkBaselineExpectation(),
+                facts=[_all_fact(f'history_{index}', seed.summary)],
+                support_refs=[seed.thread_title[:80]],
+                max_chars=1500,
                 notes='Derived from local Codex history.',
             )
         )
@@ -691,10 +854,9 @@ def _build_dogfood_tasks(
                 ),
                 artifact_sources[0] if artifact_sources else None,
             )
-        first_artifact = preferred_artifact
-        if first_artifact is not None:
+        if preferred_artifact is not None:
             artifact_answer = ''
-            for line in first_artifact.content.splitlines():
+            for line in preferred_artifact.content.splitlines():
                 if (
                     'graphiti mcp --transport stdio' in line.lower()
                     or 'make benchmark-memory' in line.lower()
@@ -704,25 +866,18 @@ def _build_dogfood_tasks(
                     break
             if artifact_answer:
                 tasks.append(
-                    BenchmarkTaskFixture(
+                    _build_dogfood_fixture(
                         task_id='dogfood-multihop-1',
-                        suite='dogfood_local',
                         tier='smoke',
                         query=f'{first_history.thread_title} and {artifact_answer}',
                         task_type=BenchmarkTaskType.multi_hop_recall,
                         difficulty='hard',
-                        gold_answer_checks=[
-                            _make_contains_check(first_history.summary, artifact_answer)
+                        facts=[
+                            _all_fact('history_summary', first_history.summary),
+                            _all_fact('artifact_answer', artifact_answer),
                         ],
-                        gold_evidence_checks=[
-                            _make_contains_check(
-                                first_artifact.key,
-                                f'thread={first_history.thread_title[:80]}',
-                            )
-                        ],
-                        required_sources=[first_artifact.key, first_history.thread_title[:80]],
-                        max_recall_chars=1700,
-                        baseline_expectation=BenchmarkBaselineExpectation(),
+                        support_refs=[preferred_artifact.key, first_history.thread_title[:80]],
+                        max_chars=1700,
                         notes='Combines local history with current repo artifact guidance.',
                     )
                 )
@@ -742,18 +897,15 @@ def _build_dogfood_tasks(
                     break
             if snippet:
                 full_tasks.append(
-                    BenchmarkTaskFixture(
+                    _build_dogfood_fixture(
                         task_id=f'dogfood-artifact-extra-{len(full_tasks) + 1}',
-                        suite='dogfood_local',
                         tier='full',
                         query=f'What guidance is recorded in {source.key}?',
                         task_type=BenchmarkTaskType.artifact_recall,
                         difficulty='medium',
-                        gold_answer_checks=[_make_contains_check(snippet)],
-                        gold_evidence_checks=[_make_contains_check(source.key)],
-                        required_sources=[source.key],
-                        max_recall_chars=1500,
-                        baseline_expectation=BenchmarkBaselineExpectation(),
+                        facts=[_all_fact(f'guidance_{len(full_tasks) + 1}', snippet)],
+                        support_refs=[source.key],
+                        max_chars=1500,
                         notes='Extra dogfood artifact task.',
                     )
                 )
@@ -810,11 +962,17 @@ async def _build_dogfood_engine_and_sources() -> tuple[
 
     baseline_sources = [*artifact_sources, *history_sources]
     for seed in history_seeds:
+        provenance_ids = [
+            memory_source_id(seed.kind.value, seed.summary),
+            thread_source_id(seed.thread_title),
+            session_source_id(seed.session_id),
+        ]
         baseline_sources.append(
             BaselineSource(
                 key=f'memory:{seed.kind.value}:{seed.summary}',
                 source_type='memory',
                 content=f'{seed.summary}\n{seed.details}\n{seed.thread_title}',
+                provenance_ids=tuple(_dedupe_preserve(provenance_ids)),
             )
         )
     return engine, baseline_sources, history_seeds, dogfood_tasks, temp_dir
@@ -831,25 +989,19 @@ async def run_benchmark(
     effective_suite = 'dogfood_local' if mode == 'dogfood' else suite
     if mode == 'dogfood':
         engine, sources, _history_seeds, dogfood_tasks, temp_dir = await _build_dogfood_engine_and_sources()
-        fixtures = [
-            task
-            for task in dogfood_tasks
-            if task.tier == 'smoke' or tier == 'full'
-        ]
+        fixtures = [task for task in dogfood_tasks if task.tier == 'smoke' or tier == 'full']
     else:
         fixtures = get_suite_tasks(suite, tier)
+        engine, sources, temp_dir = await _build_engine_and_sources(local_history_overlay)
+
     baseline = (
         BenchmarkResult.model_validate(json.loads(baseline_result_path.read_text()))
         if baseline_result_path is not None
         else None
     )
     if baseline is not None and (baseline.suite != effective_suite or baseline.tier != tier):
-        raise ValueError(
-            'baseline result suite/tier does not match requested benchmark run'
-        )
+        raise ValueError('baseline result suite/tier does not match requested benchmark run')
 
-    if mode != 'dogfood':
-        engine, sources, temp_dir = await _build_engine_and_sources(local_history_overlay)
     try:
         task_results: list[BenchmarkTaskResult] = []
         for fixture in fixtures:
@@ -858,40 +1010,24 @@ async def run_benchmark(
                     f'task {fixture.task_id} requires a judge model and cannot run in deterministic mode'
                 )
 
-            control_context, control_search_actions = _naive_control_context(fixture.query, sources)
-            treatment_context = await _compact_treatment_context(engine, fixture)
-            control = _channel_result(
-                fixture,
-                control_context,
-                search_actions=control_search_actions,
-            )
-            treatment = _channel_result(
-                fixture,
-                treatment_context,
-                search_actions=1,
-            )
+            control_context, control_trace = _build_control_context(sources, fixture)
+            treatment_context, treatment_trace = await _collect_treatment_channel(engine, fixture)
+            control = _channel_result(fixture, control_context, control_trace)
+            treatment = _channel_result(fixture, treatment_context, treatment_trace)
             task_results.append(_task_result(fixture, control, treatment))
 
         aggregate = _aggregate(task_results)
         failure_reasons = _gate_failure_reasons(aggregate, task_results, baseline)
         gate_passed = not failure_reasons
-        reward = None
-        if gate_passed:
-            reward = round(
-                (0.60 * aggregate.accuracy_score)
-                + (0.25 * aggregate.token_efficiency_score)
-                + (0.15 * aggregate.search_efficiency_score),
-                6,
-            )
-
+        reward = round(aggregate.mean_task_score_normalized, 6) if gate_passed else None
         return BenchmarkResult(
             suite=effective_suite,
             tier=tier,
             config={
                 'mode': mode,
                 'local_history_overlay': local_history_overlay,
-                'token_source': 'estimated',
-                'search_proxy': 'deterministic_source_scan',
+                'reward_contract': 'mean_normalized_task_score',
+                'hard_budgets': ['retrieval_calls', 'returned_context_chars'],
                 'baseline_result_path': str(baseline_result_path) if baseline_result_path else '',
             },
             timestamp=datetime.now(timezone.utc).isoformat(),
@@ -912,7 +1048,7 @@ def compare_results(baseline: BenchmarkResult, candidate: BenchmarkResult) -> Be
         for candidate_task in candidate.tasks
         for baseline_task in baseline.tasks
         if candidate_task.task_id == baseline_task.task_id
-        and candidate_task.treatment.overall_score < baseline_task.treatment.overall_score
+        and candidate_task.treatment.task_score < baseline_task.treatment.task_score
     ]
     reward_delta = None
     if baseline.reward is not None and candidate.reward is not None:
@@ -923,13 +1059,15 @@ def compare_results(baseline: BenchmarkResult, candidate: BenchmarkResult) -> Be
         candidate_gate_passed=candidate.gate_passed,
         reward_delta=reward_delta,
         aggregate_deltas={
-            'accuracy_score': candidate.aggregate.accuracy_score - baseline.aggregate.accuracy_score,
-            'evidence_coverage': candidate.aggregate.evidence_coverage
-            - baseline.aggregate.evidence_coverage,
-            'token_efficiency_score': candidate.aggregate.token_efficiency_score
-            - baseline.aggregate.token_efficiency_score,
-            'search_efficiency_score': candidate.aggregate.search_efficiency_score
-            - baseline.aggregate.search_efficiency_score,
+            'mean_task_score': candidate.aggregate.mean_task_score - baseline.aggregate.mean_task_score,
+            'mean_retrieval_score': candidate.aggregate.mean_retrieval_score
+            - baseline.aggregate.mean_retrieval_score,
+            'mean_attribution_score': candidate.aggregate.mean_attribution_score
+            - baseline.aggregate.mean_attribution_score,
+            'mean_answer_score': candidate.aggregate.mean_answer_score
+            - baseline.aggregate.mean_answer_score,
+            'mean_capability_score': candidate.aggregate.mean_capability_score
+            - baseline.aggregate.mean_capability_score,
         },
         regressed_tasks=regressed_tasks,
     )

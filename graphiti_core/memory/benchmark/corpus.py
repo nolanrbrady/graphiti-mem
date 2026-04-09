@@ -11,6 +11,8 @@ from pathlib import Path
 from graphiti_core.memory.models import MemoryKind
 from graphiti_core.memory.models import BootstrapDiscovery, BootstrapSession
 
+from .models import artifact_source_id, memory_source_id, session_source_id, thread_source_id
+
 
 @dataclass(frozen=True, slots=True)
 class BenchmarkHistorySession:
@@ -38,6 +40,7 @@ class BaselineSource:
     key: str
     source_type: str
     content: str
+    provenance_ids: tuple[str, ...] = ()
 
 
 DOGFOOD_PATTERNS: tuple[str, ...] = (
@@ -75,6 +78,7 @@ default_benchmark_tier = "smoke"
 """,
     'Makefile': """.PHONY: test benchmark-memory
 
+# Blessed command for the deterministic memory benchmark: make benchmark-memory
 test:
 \tpython3 -m pytest tests/memory -m "not integration"
 
@@ -88,8 +92,10 @@ The benchmark uses paired execution:
 - treatment calls Graphiti recall before exploration
 
 The deterministic, offline-capable reward path is safe for unattended optimization.
+The default reward path must not require an external model judge.
+Each task is scored in stages: retrieval, attribution, answer, and efficiency.
+Task score reaches 100 only when the right support is retrieved, provenance is attached, the answer is correct, and hard budgets are respected.
 Reward is only returned when hard gates pass.
-Hard gates block wins that lower tokens while hurting accuracy or evidence coverage.
 """,
     'docs/history.md': """# History Bootstrap Notes
 
@@ -102,6 +108,21 @@ Durable memories should capture decisions, workflows, pitfalls, and implementati
 The smoke tier should stay fast enough for every autoresearch iteration.
 The full tier is for keep-discard decisions and final acceptance.
 Search reduction is measured with a stable source-scan proxy in the deterministic suite.
+""",
+    'docs/legacy-benchmark.md': """# Legacy Benchmark Notes
+
+The retired v1 benchmark used `make benchmark-memory-v1`.
+That command is obsolete and should not be treated as the current target.
+""",
+    'docs/legacy-runtime.md': """# Legacy Runtime Notes
+
+An earlier prototype targeted `>=3.9`.
+Current project metadata should override this stale note.
+""",
+    'docs/legacy-judge.md': """# Legacy Judge Notes
+
+An older experiment relied on an external model judge.
+The default deterministic reward path should not use that networked design.
 """,
 }
 
@@ -134,6 +155,13 @@ HISTORY_SESSIONS: tuple[BenchmarkHistorySession, ...] = (
         user_message='What makes the benchmark safe for unattended optimization?',
         assistant_message='Keep the default suite deterministic, CLI-first, and guarded by hard pass-fail thresholds before reward.',
         tokens_used=1500,
+    ),
+    BenchmarkHistorySession(
+        session_id='session-search-antipattern',
+        title='Legacy search playbook',
+        user_message='Should the agent start with broad repository search every time?',
+        assistant_message='No. That old search-first playbook is stale and wastes tokens when durable memory already covers the task.',
+        tokens_used=900,
     ),
 )
 
@@ -193,6 +221,15 @@ MEMORY_SEEDS: tuple[BenchmarkMemorySeed, ...] = (
         thread_title='Autoresearch reward loop',
         tags=('benchmark', 'control'),
     ),
+    BenchmarkMemorySeed(
+        kind=MemoryKind.pitfall,
+        summary='Legacy search-first guidance is stale',
+        details='Do not start with broad repository search when durable memory already covers the task.',
+        source_agent='codex',
+        session_id='session-search-antipattern',
+        thread_title='Legacy search playbook',
+        tags=('search', 'stale'),
+    ),
 )
 
 
@@ -202,14 +239,29 @@ def materialize_project(root: Path) -> list[BaselineSource]:
         path = root / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
-        sources.append(BaselineSource(key=relative_path, source_type='artifact', content=content))
+        sources.append(
+            BaselineSource(
+                key=relative_path,
+                source_type='artifact',
+                content=content,
+                provenance_ids=(artifact_source_id(relative_path),),
+            )
+        )
 
     for seed in MEMORY_SEEDS:
+        provenance_ids = [memory_source_id(seed.kind.value, seed.summary)]
+        if seed.thread_title:
+            provenance_ids.append(thread_source_id(seed.thread_title))
+        if seed.session_id:
+            provenance_ids.append(session_source_id(seed.session_id))
+        if seed.artifact_path:
+            provenance_ids.append(artifact_source_id(seed.artifact_path))
         sources.append(
             BaselineSource(
                 key=f'memory:{seed.kind.value}:{seed.summary}',
                 source_type='memory',
                 content=f'{seed.summary}\n{seed.details}\n{seed.thread_title}\n{seed.session_id}',
+                provenance_ids=tuple(provenance_ids),
             )
         )
 
@@ -225,6 +277,10 @@ def materialize_project(root: Path) -> list[BaselineSource]:
                 key=f'history:{session.session_id}',
                 source_type='history',
                 content=f'{session.title}\n{transcript}',
+                provenance_ids=(
+                    thread_source_id(session.title),
+                    session_source_id(session.session_id),
+                ),
             )
         )
     return sources
@@ -348,6 +404,7 @@ def collect_dogfood_artifacts(project_root: Path, max_files: int = 16) -> list[B
                 key=relative,
                 source_type='artifact',
                 content=path.read_text(errors='ignore')[:12_000],
+                provenance_ids=(artifact_source_id(relative),),
             )
         )
         if len(sources) >= max_files:
@@ -379,6 +436,10 @@ def build_dogfood_history_sources(
                 key=f'history:{session.title[:80]}',
                 source_type='history',
                 content=session.content,
+                provenance_ids=(
+                    thread_source_id(session.title[:80]),
+                    session_source_id(session.session_id),
+                ),
             )
         )
     return sources
