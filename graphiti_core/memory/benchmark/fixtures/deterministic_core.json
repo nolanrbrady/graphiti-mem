@@ -1,0 +1,454 @@
+{
+  "tasks": [
+    {
+      "task_id": "artifact-test-command",
+      "suite": "deterministic_core",
+      "tier": "smoke",
+      "query": "How does this repo expect tests to run?",
+      "task_type": "artifact_recall",
+      "difficulty": "easy",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": ["make test"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["supporting artifacts", "readme.md"]}
+      ],
+      "required_sources": ["README.md"],
+      "max_recall_chars": 1200,
+      "baseline_expectation": {"minimum_treatment_accuracy": 1.0, "minimum_evidence_coverage": 1.0},
+      "notes": "Artifact recall should surface the README guidance."
+    },
+    {
+      "task_id": "artifact-benchmark-command",
+      "suite": "deterministic_core",
+      "tier": "smoke",
+      "query": "What is the blessed command for the deterministic memory benchmark?",
+      "task_type": "artifact_recall",
+      "difficulty": "easy",
+      "gold_answer_checks": [
+        {"kind": "any_contains", "values": ["make benchmark-memory", "python3 -m graphiti_core.memory.benchmark run --suite deterministic_core --tier smoke"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "any_contains", "values": ["makefile", "docs/benchmarking.md"]}
+      ],
+      "required_sources": ["Makefile"],
+      "max_recall_chars": 1250,
+      "baseline_expectation": {"minimum_treatment_accuracy": 0.8, "minimum_evidence_coverage": 0.8},
+      "notes": "The make target should be easy to recover from indexed artifacts."
+    },
+    {
+      "task_id": "workflow-recall-before-search",
+      "suite": "deterministic_core",
+      "tier": "smoke",
+      "query": "What should the agent do before broad file search?",
+      "task_type": "history_recall",
+      "difficulty": "medium",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": ["Run Graphiti recall before broad file search"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["agent=codex", "thread=Recall before search"]}
+      ],
+      "required_sources": ["Recall before search"],
+      "max_recall_chars": 1100,
+      "baseline_expectation": {"minimum_treatment_accuracy": 1.0, "minimum_evidence_coverage": 1.0},
+      "notes": "History-derived workflow memory should cite the Codex thread."
+    },
+    {
+      "task_id": "decision-pattern-y",
+      "suite": "deterministic_core",
+      "tier": "smoke",
+      "query": "Which pattern replaced pattern X and why?",
+      "task_type": "history_recall",
+      "difficulty": "medium",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": ["Prefer pattern Y over pattern X", "deterministic"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["agent=codex", "thread=Pattern Y migration"]}
+      ],
+      "required_sources": ["Pattern Y migration"],
+      "max_recall_chars": 1100,
+      "baseline_expectation": {"minimum_treatment_accuracy": 1.0, "minimum_evidence_coverage": 1.0},
+      "notes": "Decision memory should preserve why pattern Y won."
+    },
+    {
+      "task_id": "pitfall-history-alone",
+      "suite": "deterministic_core",
+      "tier": "smoke",
+      "query": "Why is transcript import alone not enough for the offline benchmark?",
+      "task_type": "history_recall",
+      "difficulty": "medium",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": ["Transcript import alone is insufficient", "durable memories"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["agent=codex", "thread=History import gap"]}
+      ],
+      "required_sources": ["History import gap"],
+      "max_recall_chars": 1200,
+      "baseline_expectation": {"minimum_treatment_accuracy": 0.9, "minimum_evidence_coverage": 0.9},
+      "notes": "The benchmark should reward distilled durable memory, not just raw transcript ingestion."
+    },
+    {
+      "task_id": "constraint-offline-judge",
+      "suite": "deterministic_core",
+      "tier": "smoke",
+      "query": "What constraint makes the default benchmark safe for unattended optimization?",
+      "task_type": "multi_hop_recall",
+      "difficulty": "hard",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": ["deterministic", "offline-capable", "must not require an external model judge"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["agent=codex", "thread=Autoresearch reward loop"]}
+      ],
+      "required_sources": ["Autoresearch reward loop", "docs/benchmarking.md"],
+      "max_recall_chars": 1250,
+      "baseline_expectation": {"minimum_treatment_accuracy": 0.9, "minimum_evidence_coverage": 0.9},
+      "notes": "Multi-hop task spanning docs and history-derived memory."
+    },
+    {
+      "task_id": "reward-hard-gate",
+      "suite": "deterministic_core",
+      "tier": "smoke",
+      "query": "When should the benchmark return a reward?",
+      "task_type": "multi_hop_recall",
+      "difficulty": "hard",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": ["Reward is returned only after hard gates pass", "accuracy or evidence coverage regresses"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["docs/benchmarking.md", "thread=Autoresearch reward loop"]}
+      ],
+      "required_sources": ["Autoresearch reward loop", "docs/benchmarking.md"],
+      "max_recall_chars": 1300,
+      "baseline_expectation": {"minimum_treatment_accuracy": 0.8, "minimum_evidence_coverage": 0.8},
+      "notes": "Reward gating should connect docs and durable implementation notes."
+    },
+    {
+      "task_id": "control-vs-treatment-pattern",
+      "suite": "deterministic_core",
+      "tier": "smoke",
+      "query": "How does the deterministic benchmark compare control and treatment?",
+      "task_type": "multi_hop_recall",
+      "difficulty": "hard",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": ["Pair naive source scan control against Graphiti recall treatment", "paired execution"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["docs/benchmarking.md", "pattern"]}
+      ],
+      "required_sources": ["docs/benchmarking.md", "Autoresearch reward loop"],
+      "max_recall_chars": 1350,
+      "baseline_expectation": {"minimum_treatment_accuracy": 0.8, "minimum_evidence_coverage": 0.8},
+      "notes": "Paired execution should be explicit in the returned memory."
+    },
+    {
+      "task_id": "artifact-python-version",
+      "suite": "deterministic_core",
+      "tier": "full",
+      "query": "Which Python version is required for the benchmark demo project?",
+      "task_type": "artifact_recall",
+      "difficulty": "easy",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": [">=3.10"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["pyproject.toml", "supporting artifacts"]}
+      ],
+      "required_sources": ["pyproject.toml"],
+      "max_recall_chars": 1100,
+      "baseline_expectation": {"minimum_treatment_accuracy": 0.9, "minimum_evidence_coverage": 0.9},
+      "notes": "Project metadata should be indexed deterministically."
+    },
+    {
+      "task_id": "artifact-benchmark-suite",
+      "suite": "deterministic_core",
+      "tier": "full",
+      "query": "What benchmark suite and tier are the defaults in project config?",
+      "task_type": "artifact_recall",
+      "difficulty": "easy",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": ["deterministic_core", "smoke"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["pyproject.toml"]}
+      ],
+      "required_sources": ["pyproject.toml"],
+      "max_recall_chars": 1150,
+      "baseline_expectation": {"minimum_treatment_accuracy": 0.8, "minimum_evidence_coverage": 0.8},
+      "notes": "Default suite config should be recoverable from project metadata."
+    },
+    {
+      "task_id": "artifact-concise-evidence",
+      "suite": "deterministic_core",
+      "tier": "full",
+      "query": "How should answers be formatted for this benchmark repo?",
+      "task_type": "artifact_recall",
+      "difficulty": "easy",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": ["Prefer concise evidence-first answers"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["AGENTS.md"]}
+      ],
+      "required_sources": ["AGENTS.md"],
+      "max_recall_chars": 1100,
+      "baseline_expectation": {"minimum_treatment_accuracy": 0.9, "minimum_evidence_coverage": 0.9},
+      "notes": "Agent instructions should be treated as high-signal artifacts."
+    },
+    {
+      "task_id": "artifact-token-hungry-search",
+      "suite": "deterministic_core",
+      "tier": "full",
+      "query": "What kind of search should Graphiti help reduce?",
+      "task_type": "artifact_recall",
+      "difficulty": "medium",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": ["token-hungry broad search"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["README.md"]}
+      ],
+      "required_sources": ["README.md"],
+      "max_recall_chars": 1100,
+      "baseline_expectation": {"minimum_treatment_accuracy": 0.8, "minimum_evidence_coverage": 0.8},
+      "notes": "README should state the user-facing benchmark objective."
+    },
+    {
+      "task_id": "artifact-hard-gates-doc",
+      "suite": "deterministic_core",
+      "tier": "full",
+      "query": "What do hard gates block in the benchmark?",
+      "task_type": "artifact_recall",
+      "difficulty": "medium",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": ["lower tokens while hurting accuracy or evidence coverage"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["docs/benchmarking.md"]}
+      ],
+      "required_sources": ["docs/benchmarking.md"],
+      "max_recall_chars": 1200,
+      "baseline_expectation": {"minimum_treatment_accuracy": 0.8, "minimum_evidence_coverage": 0.8},
+      "notes": "Hard-gate explanation should come from docs."
+    },
+    {
+      "task_id": "history-deterministic-ingestion",
+      "suite": "deterministic_core",
+      "tier": "full",
+      "query": "Why is pattern Y preferred during ingestion?",
+      "task_type": "history_recall",
+      "difficulty": "medium",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": ["keeps ingestion deterministic"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["thread=Pattern Y migration"]}
+      ],
+      "required_sources": ["Pattern Y migration"],
+      "max_recall_chars": 1100,
+      "baseline_expectation": {"minimum_treatment_accuracy": 0.9, "minimum_evidence_coverage": 0.9},
+      "notes": "The reason for pattern Y should remain visible."
+    },
+    {
+      "task_id": "history-token-savings-workflow",
+      "suite": "deterministic_core",
+      "tier": "full",
+      "query": "How does recall-first help token usage?",
+      "task_type": "history_recall",
+      "difficulty": "medium",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": ["avoid broad token-hungry repository search"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["thread=Recall before search"]}
+      ],
+      "required_sources": ["Recall before search"],
+      "max_recall_chars": 1150,
+      "baseline_expectation": {"minimum_treatment_accuracy": 0.8, "minimum_evidence_coverage": 0.8},
+      "notes": "Recall-first workflow should describe the token benefit."
+    },
+    {
+      "task_id": "history-durable-memory-gap",
+      "suite": "deterministic_core",
+      "tier": "full",
+      "query": "What should be stored in addition to raw imported sessions?",
+      "task_type": "history_recall",
+      "difficulty": "medium",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": ["durable memories", "decisions", "pitfalls"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["thread=History import gap"]}
+      ],
+      "required_sources": ["History import gap"],
+      "max_recall_chars": 1200,
+      "baseline_expectation": {"minimum_treatment_accuracy": 0.8, "minimum_evidence_coverage": 0.8},
+      "notes": "History import should not be mistaken for usable memory distillation."
+    },
+    {
+      "task_id": "history-cli-first-loop",
+      "suite": "deterministic_core",
+      "tier": "full",
+      "query": "What shape should the benchmark take for unattended optimization?",
+      "task_type": "history_recall",
+      "difficulty": "hard",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": ["deterministic", "CLI-first", "hard pass-fail thresholds"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["thread=Autoresearch reward loop"]}
+      ],
+      "required_sources": ["Autoresearch reward loop"],
+      "max_recall_chars": 1250,
+      "baseline_expectation": {"minimum_treatment_accuracy": 0.9, "minimum_evidence_coverage": 0.9},
+      "notes": "The benchmark contract should be encoded in history-derived memory."
+    },
+    {
+      "task_id": "multihop-smoke-fast-loop",
+      "suite": "deterministic_core",
+      "tier": "full",
+      "query": "Which tier should run every autoresearch iteration and why?",
+      "task_type": "multi_hop_recall",
+      "difficulty": "hard",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": ["smoke", "fast enough for every autoresearch iteration"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["docs/reward-loop.md", "supporting artifacts"]}
+      ],
+      "required_sources": ["docs/reward-loop.md"],
+      "max_recall_chars": 1300,
+      "baseline_expectation": {"minimum_treatment_accuracy": 0.8, "minimum_evidence_coverage": 0.8},
+      "notes": "Smoke-tier cadence comes from docs, not only memory."
+    },
+    {
+      "task_id": "multihop-full-acceptance",
+      "suite": "deterministic_core",
+      "tier": "full",
+      "query": "Which tier should be used for keep-discard and final acceptance?",
+      "task_type": "multi_hop_recall",
+      "difficulty": "hard",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": ["full tier", "keep-discard decisions", "final acceptance"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["docs/reward-loop.md"]}
+      ],
+      "required_sources": ["docs/reward-loop.md"],
+      "max_recall_chars": 1300,
+      "baseline_expectation": {"minimum_treatment_accuracy": 0.8, "minimum_evidence_coverage": 0.8},
+      "notes": "Full-tier usage should stay explicit."
+    },
+    {
+      "task_id": "multihop-search-proxy",
+      "suite": "deterministic_core",
+      "tier": "full",
+      "query": "How is search reduction measured in the deterministic suite?",
+      "task_type": "multi_hop_recall",
+      "difficulty": "hard",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": ["stable source-scan proxy", "deterministic suite"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["docs/reward-loop.md", "pattern"]}
+      ],
+      "required_sources": ["docs/reward-loop.md", "Autoresearch reward loop"],
+      "max_recall_chars": 1350,
+      "baseline_expectation": {"minimum_treatment_accuracy": 0.75, "minimum_evidence_coverage": 0.75},
+      "notes": "Search reduction should come from docs plus benchmark pattern memory."
+    },
+    {
+      "task_id": "multihop-docs-and-history-gap",
+      "suite": "deterministic_core",
+      "tier": "full",
+      "query": "What two steps make transcript history useful in the deterministic benchmark?",
+      "task_type": "multi_hop_recall",
+      "difficulty": "hard",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": ["Import history sessions as source evidence", "store durable memories"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["docs/history.md", "thread=History import gap"]}
+      ],
+      "required_sources": ["docs/history.md", "History import gap"],
+      "max_recall_chars": 1350,
+      "baseline_expectation": {"minimum_treatment_accuracy": 0.85, "minimum_evidence_coverage": 0.85},
+      "notes": "The benchmark should require both docs and session-derived memory."
+    },
+    {
+      "task_id": "multihop-concise-context",
+      "suite": "deterministic_core",
+      "tier": "full",
+      "query": "What answer style should keep benchmark context usable for the agent?",
+      "task_type": "multi_hop_recall",
+      "difficulty": "hard",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": ["concise evidence-first answers"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["AGENTS.md", "supporting artifacts"]}
+      ],
+      "required_sources": ["AGENTS.md"],
+      "max_recall_chars": 1150,
+      "baseline_expectation": {"minimum_treatment_accuracy": 0.85, "minimum_evidence_coverage": 0.85},
+      "notes": "Answer formatting should stay anchored in agent instructions."
+    },
+    {
+      "task_id": "multihop-offline-safety",
+      "suite": "deterministic_core",
+      "tier": "full",
+      "query": "Why is avoiding an external judge important for the default reward path?",
+      "task_type": "multi_hop_recall",
+      "difficulty": "hard",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": ["safe for unattended optimization", "must not require an external model judge"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["thread=Autoresearch reward loop", "must not require an external model judge"]}
+      ],
+      "required_sources": ["Autoresearch reward loop"],
+      "max_recall_chars": 1250,
+      "baseline_expectation": {"minimum_treatment_accuracy": 0.8, "minimum_evidence_coverage": 0.8},
+      "notes": "Offline safety should come through in constraints and history."
+    },
+    {
+      "task_id": "artifact-readme-benchmark",
+      "suite": "deterministic_core",
+      "tier": "full",
+      "query": "What does the README say Graphiti should reduce?",
+      "task_type": "artifact_recall",
+      "difficulty": "medium",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": ["reduce token-hungry broad search"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["README.md", "supporting artifacts"]}
+      ],
+      "required_sources": ["README.md"],
+      "max_recall_chars": 1150,
+      "baseline_expectation": {"minimum_treatment_accuracy": 0.8, "minimum_evidence_coverage": 0.8},
+      "notes": "README recall should stay consistent."
+    },
+    {
+      "task_id": "artifact-doc-paired-execution",
+      "suite": "deterministic_core",
+      "tier": "full",
+      "query": "What are the two sides of paired execution?",
+      "task_type": "artifact_recall",
+      "difficulty": "medium",
+      "gold_answer_checks": [
+        {"kind": "contains", "values": ["control scans synthetic corpus sources directly", "treatment calls Graphiti recall before exploration"]}
+      ],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["docs/benchmarking.md"]}
+      ],
+      "required_sources": ["docs/benchmarking.md"],
+      "max_recall_chars": 1350,
+      "baseline_expectation": {"minimum_treatment_accuracy": 0.8, "minimum_evidence_coverage": 0.8},
+      "notes": "Paired execution language lives in the benchmark docs."
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "tasks": [
+    {
+      "task_id": "hybrid-freeform-summary",
+      "suite": "hybrid_extended",
+      "tier": "smoke",
+      "query": "Summarize why the benchmark is safe for autoresearch in one sentence.",
+      "task_type": "multi_hop_recall",
+      "difficulty": "hard",
+      "gold_answer_checks": [],
+      "gold_evidence_checks": [
+        {"kind": "contains", "values": ["deterministic", "hard gates"]}
+      ],
+      "required_sources": ["Autoresearch reward loop", "docs/benchmarking.md"],
+      "max_recall_chars": 1400,
+      "baseline_expectation": {"minimum_treatment_accuracy": 0.0, "minimum_evidence_coverage": 0.8},
+      "judge_mode": "free_form",
+      "notes": "Optional suite placeholder for future judge-backed grading."
+    }
+  ]
+}
