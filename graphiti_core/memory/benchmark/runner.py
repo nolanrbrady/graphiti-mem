@@ -378,15 +378,6 @@ def _fit_sections_to_budget(
             provenance_ids.extend(section_provenance)
 
     if not kept_lines:
-        for _, entries in sections:
-            if not entries:
-                continue
-            line, item_id, line_provenance = entries[0]
-            compact_line = line[:budget].rstrip()
-            if len(line) > budget and budget > 3:
-                compact_line = f'{line[: budget - 3].rstrip()}...'
-            if compact_line:
-                return compact_line, [item_id], _dedupe_preserve(line_provenance)
         return 'No relevant memory found.', [], []
     return '\n'.join(kept_lines), selected_evidence_ids, _dedupe_preserve(provenance_ids)
 
