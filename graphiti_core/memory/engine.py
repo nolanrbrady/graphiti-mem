@@ -40,7 +40,10 @@ from graphiti_core.utils.datetime_utils import utc_now
 
 from .config import (
     apply_agent_instructions,
+    codex_config_path,
+    codex_mcp_server_installed,
     detect_project_root,
+    graphiti_mcp_command,
     initialize_project_files,
     load_index_state,
     load_runtime_config,
@@ -339,6 +342,10 @@ class MemoryEngine:
             'agents_path': str(root / 'AGENTS.md'),
             'agent_instructions_path': str(project.agent_instructions_path),
             'mcp_command': 'graphiti mcp --transport stdio',
+            'codex_mcp_command': graphiti_mcp_command(),
+            'codex_config_path': str(codex_config_path()),
+            'codex_mcp_server_name': 'graphiti',
+            'codex_mcp_installed': codex_mcp_server_installed(),
         }
 
     def _memory_name(self, kind: MemoryKind, summary: str) -> str:
@@ -675,11 +682,7 @@ class MemoryEngine:
         return '- ' + ' | '.join(parts)
 
     def _tokenize_query(self, text: str) -> set[str]:
-        return {
-            token
-            for token in re.findall(r'[a-z0-9_]+', text.lower())
-            if len(token) >= 3
-        }
+        return {token for token in re.findall(r'[a-z0-9_]+', text.lower()) if len(token) >= 3}
 
     def _memory_overlap_score(self, memory: ParsedMemoryEpisode, query: str) -> int:
         haystack = ' '.join(
@@ -730,11 +733,7 @@ class MemoryEngine:
         ranked.sort(
             key=lambda item: (
                 -item[0],
-                -(
-                    item[1].created_at.timestamp()
-                    if item[1].created_at is not None
-                    else 0
-                ),
+                -(item[1].created_at.timestamp() if item[1].created_at is not None else 0),
             )
         )
         return [parsed for _, parsed in ranked[:limit]]
@@ -1197,6 +1196,9 @@ class MemoryEngine:
             f'State dir: {self.project.state_dir}',
             f'Structured graph extraction: {structured_status}',
             'MCP: available via `graphiti mcp --transport stdio`',
+            f'Codex MCP config: {codex_config_path()}',
+            f'Codex MCP installed: {"yes" if codex_mcp_server_installed() else "no"}',
+            f'Codex MCP command: {graphiti_mcp_command()}',
             f'Episodes: {episode_count}',
             f'Indexed artifacts: {artifact_count}',
             f'History bootstrap sessions: {imported_session_count}',

@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .config import install_codex_mcp_server
 from .engine import MemoryEngine
 from .models import BackendType, MemoryKind
 
@@ -29,6 +30,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     'force': {'type': 'boolean', 'default': False},
                     'backend': {'type': 'string', 'enum': backend_values},
                     'apply_agents': {'type': 'boolean', 'default': False},
+                    'install_mcp': {'type': 'boolean', 'default': False},
                     'history_days': {'type': 'integer', 'default': 90},
                 },
             },
@@ -212,6 +214,12 @@ async def _call_tool(root: Path, name: str, arguments: dict[str, Any]) -> str:
         agents_path = None
         if bool(arguments.get('apply_agents', False)):
             agents_path = MemoryEngine.apply_managed_agents_block(root)
+        codex_config_path = None
+        codex_config_updated = False
+        if bool(arguments.get('install_mcp', False)):
+            codex_config_path, codex_config_updated = install_codex_mcp_server(
+                python_executable=sys.executable
+            )
         payload = MemoryEngine.detect_onboarding_state(
             root,
             history_days=int(arguments.get('history_days', 90)),
@@ -222,6 +230,9 @@ async def _call_tool(root: Path, name: str, arguments: dict[str, Any]) -> str:
         payload['agents_updated'] = bool(agents_path is not None)
         if agents_path is not None:
             payload['agents_path_updated'] = str(agents_path)
+        payload['codex_mcp_updated'] = codex_config_updated
+        if codex_config_path is not None:
+            payload['codex_config_path_updated'] = str(codex_config_path)
         return _json_text(payload)
 
     if name == 'apply_agents_instructions':

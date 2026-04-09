@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 from .models import (
@@ -16,6 +17,7 @@ from .models import (
 
 GRAPHITI_BLOCK_START = '<!-- graphiti:managed:start -->'
 GRAPHITI_BLOCK_END = '<!-- graphiti:managed:end -->'
+CODEX_MCP_SERVER_NAME = 'graphiti'
 
 
 def detect_project_root(start: Path) -> Path:
@@ -129,6 +131,108 @@ def _quote(value: str) -> str:
     return f'"{escaped}"'
 
 
+def _quote_array(values: list[str]) -> str:
+    return '[' + ', '.join(_quote(value) for value in values) + ']'
+
+
+def codex_config_path(home: Path | None = None) -> Path:
+    base = home or Path.home()
+    return base / '.codex' / 'config.toml'
+
+
+def graphiti_mcp_command_args() -> list[str]:
+    return ['-m', 'graphiti_core.memory.cli', 'mcp', '--transport', 'stdio']
+
+
+def graphiti_mcp_command(python_executable: str | None = None) -> str:
+    executable = python_executable or sys.executable
+    return ' '.join([executable, *graphiti_mcp_command_args()])
+
+
+def _upsert_toml_section(contents: str, header: str, body_lines: list[str]) -> str:
+    lines = contents.splitlines()
+    start = None
+    end = len(lines)
+    for index, raw_line in enumerate(lines):
+        stripped = raw_line.strip()
+        if stripped == header:
+            start = index
+            continue
+        if start is not None and stripped.startswith('[') and stripped.endswith(']'):
+            end = index
+            break
+
+    replacement = [header, *body_lines]
+    if start is None:
+        while lines and lines[-1] == '':
+            lines.pop()
+        if lines:
+            lines.append('')
+        lines.extend(replacement)
+        return '\n'.join(lines) + '\n'
+
+    updated = lines[:start]
+    while updated and updated[-1] == '':
+        updated.pop()
+    if updated:
+        updated.append('')
+    updated.extend(replacement)
+
+    tail = lines[end:]
+    while tail and tail[0] == '':
+        tail.pop(0)
+    if tail:
+        updated.append('')
+        updated.extend(tail)
+    return '\n'.join(updated) + '\n'
+
+
+def render_codex_mcp_config(
+    python_executable: str | None = None,
+    server_name: str = CODEX_MCP_SERVER_NAME,
+) -> str:
+    return '\n'.join(
+        [
+            f'[mcp_servers.{server_name}]',
+            f'command = {_quote(python_executable or sys.executable)}',
+            f'args = {_quote_array(graphiti_mcp_command_args())}',
+        ]
+    )
+
+
+def install_codex_mcp_server(
+    home: Path | None = None,
+    *,
+    python_executable: str | None = None,
+    server_name: str = CODEX_MCP_SERVER_NAME,
+) -> tuple[Path, bool]:
+    config_path = codex_config_path(home)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    current = config_path.read_text() if config_path.exists() else ''
+    updated = _upsert_toml_section(
+        current,
+        f'[mcp_servers.{server_name}]',
+        [
+            f'command = {_quote(python_executable or sys.executable)}',
+            f'args = {_quote_array(graphiti_mcp_command_args())}',
+        ],
+    )
+    changed = updated != current
+    if changed:
+        config_path.write_text(updated)
+    return config_path, changed
+
+
+def codex_mcp_server_installed(
+    home: Path | None = None,
+    server_name: str = CODEX_MCP_SERVER_NAME,
+) -> bool:
+    config_path = codex_config_path(home)
+    if not config_path.exists():
+        return False
+    return f'[mcp_servers.{server_name}]' in config_path.read_text()
+
+
 def write_runtime_config(config_path: Path, config: RuntimeConfig) -> None:
     contents = '\n'.join(
         [
@@ -175,17 +279,25 @@ def render_agent_instructions(root: Path) -> str:
             '- If the local Graphiti MCP server is available, use `graphiti mcp --transport stdio` and call `init_project`, `discover_history`, `list_history_sessions`, `read_history_session`, `import_history_sessions`, `apply_agents_instructions`, `store_memory`, `recall_memory`, `index_project`, and `doctor` through MCP.',
             '- Use MCP as the product path. Use the CLI only as a fallback or local dev/test surface.',
             '',
-            'MCP workflow:',
+            'MCP recall triggers:',
             '- If Graphiti is not initialized in this repo, call `init_project` first.',
-            '- Before meaningful exploration, call `recall_memory` with the current task.',
-            '- When you discover durable knowledge, call `store_memory` with an allowed kind and a concise summary.',
+            '- At the start of each new task or after a context switch, call `recall_memory` with the current task.',
+            '- Call `recall_memory` again before broad repo search, before forming a plan, and before answering questions about prior decisions or workflows.',
+            '',
+            'MCP write triggers:',
+            '- Call `store_memory` when you choose an approach, confirm a constraint, discover a pitfall, document a workflow, or capture a non-obvious implementation note that should persist across sessions.',
+            '- Write memory before finishing when you learned something likely to matter on the next task, even if the change was small.',
             '- After major changes or on first setup, call `index_project`.',
             '- During onboarding, use `discover_history`, `list_history_sessions`, `read_history_session`, and `import_history_sessions` to register prior Codex or Claude sessions as source evidence.',
             '- The agent should do the reasoning and decide what durable memory to write; Graphiti stores and retrieves local project memory.',
             '',
-            'CLI fallback:',
-            '- Before meaningful exploration, run `graphiti recall "<current task>"`.',
-            '- When you discover durable knowledge, run `graphiti remember --kind <kind> --summary "<summary>" --details "<details>"`.',
+            'CLI fallback recall triggers:',
+            '- At the start of each new task or after a context switch, run `graphiti recall "<current task>"`.',
+            '- Run recall again before broad repo search, before forming a plan, and before answering questions about prior decisions or workflows.',
+            '',
+            'CLI fallback write triggers:',
+            '- When you choose an approach, confirm a constraint, discover a pitfall, document a workflow, or capture a non-obvious implementation note, run `graphiti remember --kind <kind> --summary "<summary>" --details "<details>"`.',
+            '- Before finishing, store any durable lesson that should persist into future sessions.',
             '- After major changes or on first setup, run `graphiti index --changed`.',
             '',
             'Allowed kinds:',
