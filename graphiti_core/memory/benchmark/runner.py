@@ -87,6 +87,15 @@ def _mean(values: list[float]) -> float:
     return sum(values) / len(values)
 
 
+def _token_overlap(text: str, query: str) -> int:
+    normalized = text.lower()
+    tokens = tokenize_query(query)
+    score = sum(1 for token in tokens if token in normalized)
+    if query.lower() in normalized:
+        score += max(2, len(tokens))
+    return score
+
+
 def _matching_snippet(text: str, query: str, *, max_len: int = 220) -> str:
     tokens = tokenize_query(query)
     lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -165,8 +174,25 @@ def _memory_candidate_ids(
     return _dedupe_preserve(preferred_ids)
 
 
-def _memory_rank(engine: MemoryEngine, memory: ParsedMemoryEpisode, query: str) -> tuple[int, int, float, str]:
+def _memory_rank(
+    engine: MemoryEngine,
+    memory: ParsedMemoryEpisode,
+    query: str,
+    *,
+    task_type: BenchmarkTaskType,
+) -> tuple[int, int, int, int, float, str]:
+    task_affinity = 0
+    if task_type is BenchmarkTaskType.artifact_recall:
+        task_affinity = 1 if memory.kind is MemoryKind.index_artifact else 0
+    elif task_type is BenchmarkTaskType.history_recall:
+        task_affinity = 1 if memory.kind is not MemoryKind.index_artifact else 0
+    elif memory.kind is not MemoryKind.index_artifact:
+        task_affinity = 1
+
+    summary_overlap = _token_overlap(' '.join([memory.summary, memory.thread_title]), query)
     return (
+        task_affinity,
+        summary_overlap,
         engine._memory_overlap_score(memory, query),
         -MEMORY_KIND_PRIORITY[memory.kind],
         memory.created_at.timestamp() if memory.created_at is not None else 0.0,
@@ -382,7 +408,12 @@ async def _collect_treatment_channel(
 
     ranked_memories = sorted(
         parsed_memories,
-        key=lambda memory: _memory_rank(engine, memory, fixture.query),
+        key=lambda memory: _memory_rank(
+            engine,
+            memory,
+            fixture.query,
+            task_type=fixture.task_type,
+        ),
         reverse=True,
     )
     selected_memories = _select_memories(
