@@ -43,6 +43,7 @@ def write_codex_history(
     agent_message: str,
     age_days: int = 0,
     cwd: Path | None = None,
+    timestamp_unit: str = 'milliseconds',
 ) -> None:
     codex_dir = home / '.codex'
     session_dir = codex_dir / 'sessions' / '2026' / '04' / '09'
@@ -93,7 +94,10 @@ def write_codex_history(
         )
         """
     )
-    timestamp = int((datetime.now(timezone.utc) - timedelta(days=age_days)).timestamp() * 1000)
+    base_timestamp = (datetime.now(timezone.utc) - timedelta(days=age_days)).timestamp()
+    timestamp = (
+        int(base_timestamp) if timestamp_unit == 'seconds' else int(base_timestamp * 1000)
+    )
     connection.execute(
         """
         INSERT OR REPLACE INTO threads (
@@ -388,6 +392,37 @@ def test_init_bootstraps_recent_project_codex_history(
         assert 'Prefer pattern Y over pattern X because it avoids retries.' in str(
             session['content']
         )
+        assert 'History bootstrap sessions: 1' in doctor
+
+    asyncio.run(_assert_history())
+
+
+def test_init_bootstraps_codex_history_with_seconds_timestamp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_project_files(tmp_path)
+    fake_home = tmp_path / 'home'
+    monkeypatch.setenv('HOME', str(fake_home))
+    monkeypatch.chdir(tmp_path)
+
+    write_codex_history(
+        fake_home,
+        tmp_path,
+        thread_id='seconds-timestamp',
+        title='Seconds timestamp session',
+        user_message='We already tested this path.',
+        agent_message='Use the newer path; the old one was already tried.',
+        age_days=1,
+        timestamp_unit='seconds',
+    )
+
+    assert main(['init', '--yes', '--import-history', '--apply-agents']) == 0
+
+    async def _assert_history() -> None:
+        async with await MemoryEngine.open(tmp_path) as engine:
+            doctor = await engine.doctor()
+            sessions = engine.list_history_sessions(history_days=90)
+        assert any(item['session_id'] == 'seconds-timestamp' for item in sessions)
         assert 'History bootstrap sessions: 1' in doctor
 
     asyncio.run(_assert_history())
