@@ -16,6 +16,7 @@ pytest.importorskip('kuzu')
 from graphiti_core.memory.cli import main
 from graphiti_core.memory.config import GRAPHITI_BLOCK_END, GRAPHITI_BLOCK_START
 from graphiti_core.memory.engine import MemoryEngine
+from graphiti_core.memory.mcp import _call_tool
 from graphiti_core.memory.models import MemoryKind
 
 
@@ -196,6 +197,7 @@ async def test_init_creates_local_state(tmp_path: Path) -> None:
     assert paths.agent_instructions_path.exists()
     assert config.project_name == tmp_path.name
     assert 'graphiti recall "<current task>"' in paths.agent_instructions_path.read_text()
+    assert 'init_project' in paths.agent_instructions_path.read_text()
 
 
 def test_cli_init_applies_managed_agents_block(
@@ -379,10 +381,13 @@ def test_init_bootstraps_recent_project_codex_history(
 
     async def _assert_history() -> None:
         async with await MemoryEngine.open(tmp_path) as engine:
-            recall = await engine.recall('pattern Y retries')
             doctor = await engine.doctor()
-        assert 'Prefer pattern Y over pattern X because it avoids retries.' in recall
-        assert 'agent=codex' in recall
+            sessions = engine.list_history_sessions(history_days=90)
+            session = engine.read_history_session('recent-project', history_days=90, max_chars=200)
+        assert any(item['session_id'] == 'recent-project' for item in sessions)
+        assert 'Prefer pattern Y over pattern X because it avoids retries.' in str(
+            session['content']
+        )
         assert 'History bootstrap sessions: 1' in doctor
 
     asyncio.run(_assert_history())
@@ -408,9 +413,11 @@ def test_init_bootstraps_claude_history_and_ignores_noise(
 
     async def _assert_history() -> None:
         async with await MemoryEngine.open(tmp_path) as engine:
-            recall = await engine.recall('how should tests run')
-        assert 'Run `make test` before broad code search' in recall
-        assert 'agent=claude' in recall
+            sessions = engine.list_history_sessions(history_days=90)
+            session = engine.read_history_session('claude-session', history_days=90, max_chars=200)
+        assert any(item['session_id'] == 'claude-session' for item in sessions)
+        assert 'Run `make test` before broad code search' in str(session['content'])
+        assert 'tool_use' not in str(session['content'])
 
     asyncio.run(_assert_history())
 
@@ -447,7 +454,18 @@ def test_mcp_stdio_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
         )
         list_response = read_mcp_message(process.stdout)
         tool_names = {tool['name'] for tool in list_response['result']['tools']}
-        assert {'recall', 'remember', 'index', 'doctor'} <= tool_names
+        assert {
+            'init_project',
+            'discover_history',
+            'list_history_sessions',
+            'read_history_session',
+            'import_history_sessions',
+            'apply_agents_instructions',
+            'store_memory',
+            'recall_memory',
+            'index_project',
+            'doctor',
+        } <= tool_names
 
         send_mcp_message(
             process.stdin,
@@ -456,7 +474,7 @@ def test_mcp_stdio_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
                 'id': 3,
                 'method': 'tools/call',
                 'params': {
-                    'name': 'remember',
+                    'name': 'store_memory',
                     'arguments': {
                         'kind': 'decision',
                         'summary': 'Prefer pattern Y',
@@ -474,7 +492,10 @@ def test_mcp_stdio_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
                 'jsonrpc': '2.0',
                 'id': 4,
                 'method': 'tools/call',
-                'params': {'name': 'recall', 'arguments': {'query': 'pattern Y', 'limit': 4}},
+                'params': {
+                    'name': 'recall_memory',
+                    'arguments': {'query': 'pattern Y', 'limit': 4},
+                },
             },
         )
         recall_response = read_mcp_message(process.stdout)
@@ -482,3 +503,77 @@ def test_mcp_stdio_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     finally:
         process.terminate()
         process.wait(timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_mcp_init_project_and_apply_agents(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_project_files(tmp_path)
+    fake_home = tmp_path / 'home'
+    monkeypatch.setenv('HOME', str(fake_home))
+
+    payload = json.loads(
+        await _call_tool(
+            tmp_path,
+            'init_project',
+            {'apply_agents': True, 'history_days': 90},
+        )
+    )
+
+    assert payload['configured'] is True
+    assert payload['configured_backend'] in {'kuzu', 'neo4j'}
+    assert payload['agents_updated'] is True
+    assert payload['mcp_command'] == 'graphiti mcp --transport stdio'
+    assert GRAPHITI_BLOCK_START in (tmp_path / 'AGENTS.md').read_text()
+
+
+@pytest.mark.asyncio
+async def test_mcp_history_discovery_read_and_import(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_project_files(tmp_path)
+    fake_home = tmp_path / 'home'
+    monkeypatch.setenv('HOME', str(fake_home))
+
+    write_codex_history(
+        fake_home,
+        tmp_path,
+        thread_id='mcp-codex-session',
+        title='Codex memory bootstrap',
+        user_message='We already tried pattern X.',
+        agent_message='Pattern Y replaced pattern X after repeated retries.',
+        age_days=1,
+    )
+    MemoryEngine.init_project(tmp_path)
+
+    discovery = json.loads(await _call_tool(tmp_path, 'discover_history', {'history_days': 90}))
+    sessions = json.loads(
+        await _call_tool(tmp_path, 'list_history_sessions', {'history_days': 90, 'limit': 10})
+    )
+    session = json.loads(
+        await _call_tool(
+            tmp_path,
+            'read_history_session',
+            {'session_id': 'mcp-codex-session', 'history_days': 90, 'max_chars': 200},
+        )
+    )
+    imported = json.loads(
+        await _call_tool(
+            tmp_path,
+            'import_history_sessions',
+            {'session_ids': ['mcp-codex-session'], 'history_days': 90},
+        )
+    )
+
+    assert discovery['history_sessions_detected'] == 1
+    assert any(item['session_id'] == 'mcp-codex-session' for item in sessions)
+    assert 'Pattern Y replaced pattern X after repeated retries.' in session['content']
+    assert imported == [
+        {
+            'session_id': 'mcp-codex-session',
+            'source_agent': 'codex',
+            'thread_title': 'Codex memory bootstrap',
+        }
+    ]
+
+    async with await MemoryEngine.open(tmp_path) as engine:
+        doctor = await engine.doctor()
+
+    assert 'History bootstrap sessions: 1' in doctor
