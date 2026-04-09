@@ -17,7 +17,6 @@ from graphiti_core.embedder.client import EmbedderClient
 from graphiti_core.graphiti_types import GraphitiClients
 from graphiti_core.llm_client.client import LLMClient
 from graphiti_core.nodes import EpisodeType, EpisodicNode
-from graphiti_core.prompts.models import Message
 from graphiti_core.search.search import search
 from graphiti_core.search.search_config import (
     DEFAULT_SEARCH_LIMIT,
@@ -38,6 +37,7 @@ from graphiti_core.tracer import NoOpTracer
 from graphiti_core.utils.datetime_utils import utc_now
 
 from .config import (
+    apply_agent_instructions,
     detect_project_root,
     initialize_project_files,
     load_index_state,
@@ -85,17 +85,6 @@ class ArtifactSummary(BaseModel):
     summary: str
     key_points: list[str] = Field(default_factory=list)
     commands: list[str] = Field(default_factory=list)
-
-
-class DurableMemoryCandidate(BaseModel):
-    kind: MemoryKind
-    summary: str
-    details: str = ''
-    tags: list[str] = Field(default_factory=list)
-
-
-class DurableMemoryExtraction(BaseModel):
-    memories: list[DurableMemoryCandidate] = Field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -296,6 +285,37 @@ class MemoryEngine:
             config = MemoryEngine.default_runtime_config(root)
         return initialize_project_files(root, force=force, config=config)
 
+    @staticmethod
+    def apply_managed_agents_block(start: Path | None = None) -> Path:
+        return apply_agent_instructions((start or Path.cwd()).resolve())
+
+    @classmethod
+    def detect_onboarding_state(
+        cls,
+        start: Path | None = None,
+        *,
+        history_days: int = 90,
+        requested_backend: BackendType | None = None,
+    ) -> dict[str, Any]:
+        root = detect_project_root((start or Path.cwd()).resolve())
+        project = build_project_paths(root)
+        history = cls.discover_history(root, history_days=history_days)
+        backend = cls.choose_backend(root, requested_backend=requested_backend)
+        return {
+            'root': str(root),
+            'state_dir': str(project.state_dir),
+            'configured': project.config_path.exists(),
+            'backend': backend.value,
+            'history_days': history_days,
+            'history_sessions_detected': history.total_sessions,
+            'history_warning_threshold': cls.bootstrap_warning_threshold(),
+            'codex_sessions_detected': len(history.codex_sessions),
+            'claude_sessions_detected': len(history.claude_sessions),
+            'agents_path': str(root / 'AGENTS.md'),
+            'agent_instructions_path': str(project.agent_instructions_path),
+            'mcp_command': 'graphiti mcp --transport stdio',
+        }
+
     def _memory_name(self, kind: MemoryKind, summary: str) -> str:
         return f'{kind.value}: {summary[:120]}'
 
@@ -374,6 +394,56 @@ class MemoryEngine:
             source_description=source_description,
             created_at=timestamp,
         )
+
+    def list_history_sessions(
+        self,
+        *,
+        history_days: int = 90,
+        limit: int | None = None,
+    ) -> list[dict[str, str]]:
+        discovery = self.discover_history(self.project.root, history_days)
+        sessions = discovery.all_sessions()
+        if limit is not None:
+            sessions = sessions[:limit]
+        return [
+            {
+                'session_id': session.session_id,
+                'source_agent': session.source_agent,
+                'title': session.title,
+                'created_at': session.created_at.isoformat(),
+                'source_path': session.source_path,
+                'content_length': str(len(session.content)),
+            }
+            for session in sessions
+        ]
+
+    def read_history_session(
+        self,
+        session_id: str,
+        *,
+        history_days: int = 90,
+        offset: int = 0,
+        max_chars: int = 6000,
+    ) -> dict[str, str | int | bool]:
+        discovery = self.discover_history(self.project.root, history_days)
+        for session in discovery.all_sessions():
+            if session.session_id != session_id:
+                continue
+            content = session.content
+            start = max(0, offset)
+            end = min(len(content), start + max_chars)
+            return {
+                'session_id': session.session_id,
+                'source_agent': session.source_agent,
+                'title': session.title,
+                'created_at': session.created_at.isoformat(),
+                'source_path': session.source_path,
+                'offset': start,
+                'returned_chars': end - start,
+                'has_more': end < len(content),
+                'content': content[start:end],
+            }
+        raise ValueError(f'History session not found: {session_id}')
 
     async def remember(
         self,
@@ -774,45 +844,20 @@ class MemoryEngine:
         )
 
     async def _summarize_artifact(self, title: str, content: str) -> ArtifactSummary:
-        if not self.structured_memory_enabled:
-            commands: list[str] = []
-            key_points: list[str] = []
-            lines = [line.strip() for line in content.splitlines() if line.strip()]
-            summary = lines[0][:200] if lines else title
-            for line in lines[:40]:
-                if line.startswith('#'):
-                    key_points.append(line.lstrip('# ').strip())
-                if line.startswith(('make ', 'uv ', 'pip ', 'python ', 'docker ', 'pytest ')):
-                    commands.append(line)
-            return ArtifactSummary(
-                summary=summary,
-                key_points=key_points[:5],
-                commands=commands[:5],
-            )
-
-        prompt = [
-            Message(
-                role='system',
-                content=(
-                    'You summarize repository artifacts for a local agent memory system. '
-                    'Return concise, high-signal summaries that reduce future codebase search.'
-                ),
-            ),
-            Message(
-                role='user',
-                content=(
-                    f'Artifact title: {title}\n'
-                    f'Artifact content:\n{content[:ARTIFACT_CONTENT_LIMIT]}\n\n'
-                    'Summarize this artifact for future coding agents.'
-                ),
-            ),
-        ]
-        response = await self.clients.llm_client.generate_response(
-            prompt,
-            response_model=ArtifactSummary,
-            prompt_name='memory.index_artifact',
+        commands: list[str] = []
+        key_points: list[str] = []
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        summary = lines[0][:200] if lines else title
+        for line in lines[:40]:
+            if line.startswith('#'):
+                key_points.append(line.lstrip('# ').strip())
+            if line.startswith(('make ', 'uv ', 'pip ', 'python ', 'docker ', 'pytest ')):
+                commands.append(line)
+        return ArtifactSummary(
+            summary=summary,
+            key_points=key_points[:5],
+            commands=commands[:5],
         )
-        return ArtifactSummary(**response)
 
     def _artifact_details(self, artifact: IndexedArtifact, summary: ArtifactSummary) -> str:
         lines = [summary.summary]
@@ -826,91 +871,6 @@ class MemoryEngine:
         lines.append('Excerpt:')
         lines.append(artifact.body[:1600])
         return '\n'.join(lines)
-
-    async def _extract_durable_memories(
-        self,
-        *,
-        title: str,
-        content: str,
-        source_kind: str,
-    ) -> list[DurableMemoryCandidate]:
-        if self.structured_memory_enabled:
-            prompt = [
-                Message(
-                    role='system',
-                    content=(
-                        'Extract durable project memory for a local coding-agent memory engine. '
-                        'Only emit high-signal, project-useful items. '
-                        'Use the kinds decision, constraint, pattern, implementation_note, workflow, and pitfall.'
-                    ),
-                ),
-                Message(
-                    role='user',
-                    content=(
-                        f'Source kind: {source_kind}\n'
-                        f'Title: {title}\n'
-                        f'Content:\n{content[:ARTIFACT_CONTENT_LIMIT]}\n\n'
-                        'Return up to 5 durable memories that will help future coding agents.'
-                    ),
-                ),
-            ]
-            try:
-                response = await self.clients.llm_client.generate_response(
-                    prompt,
-                    response_model=DurableMemoryExtraction,
-                    prompt_name='memory.extract_durable_memories',
-                )
-                parsed = DurableMemoryExtraction(**response)
-                if parsed.memories:
-                    return parsed.memories[:5]
-            except Exception:
-                pass
-
-        return self._heuristic_durable_memories(title=title, content=content)
-
-    def _heuristic_durable_memories(
-        self,
-        *,
-        title: str,
-        content: str,
-    ) -> list[DurableMemoryCandidate]:
-        memories: list[DurableMemoryCandidate] = []
-        seen: set[tuple[MemoryKind, str]] = set()
-        lines = [line.strip() for line in content.splitlines() if line.strip()]
-
-        def add(kind: MemoryKind, summary: str, details: str = '') -> None:
-            key = (kind, summary)
-            if key in seen:
-                return
-            seen.add(key)
-            memories.append(
-                DurableMemoryCandidate(kind=kind, summary=summary[:180], details=details[:600])
-            )
-
-        for line in lines[:80]:
-            lowered = line.lower()
-            if lowered.startswith(('run ', 'use `make', 'use `uv', 'before ', 'after ')):
-                add(MemoryKind.workflow, line, f'Derived from {title}.')
-            if any(
-                token in lowered for token in ['prefer ', 'instead of', 'replaces ', 'switch to']
-            ):
-                add(MemoryKind.decision, line, f'Derived from {title}.')
-            if any(
-                token in lowered
-                for token in ['must ', 'should not', 'do not', 'only ', 'requires ', 'required']
-            ):
-                add(MemoryKind.constraint, line, f'Derived from {title}.')
-            if any(
-                token in lowered for token in ['avoid ', 'failed', 'failure', 'pitfall', 'retry']
-            ):
-                add(MemoryKind.pitfall, line, f'Derived from {title}.')
-            if 'pattern' in lowered:
-                add(MemoryKind.pattern, line, f'Derived from {title}.')
-
-        if not memories and lines:
-            add(MemoryKind.implementation_note, lines[0], f'Derived from {title}.')
-
-        return memories[:5]
 
     async def _delete_episode_if_present(self, episode_uuid: str) -> None:
         if not episode_uuid:
@@ -972,38 +932,20 @@ class MemoryEngine:
                     prefer_plain_episode=True,
                 )
 
-                extracted_memories = await self._extract_durable_memories(
-                    title=artifact.title,
-                    content=details,
-                    source_kind='artifact',
-                )
-                memory_episode_uuids: list[str] = []
-                for memory in extracted_memories:
-                    stored = await self._remember_unlocked(
-                        kind=memory.kind,
-                        summary=memory.summary,
-                        details=memory.details,
-                        source='indexer',
-                        tags=memory.tags,
-                        artifact_path=artifact.artifact_path,
-                        provenance={'Captured From': 'artifact index'},
-                        prefer_plain_episode=True,
-                    )
-                    memory_episode_uuids.append(stored['uuid'])
-
                 artifacts_state[artifact.key] = {
                     'fingerprint': artifact.fingerprint,
                     'episode_uuid': remembered['uuid'],
-                    'memory_episode_uuids': memory_episode_uuids,
+                    'memory_episode_uuids': [],
                 }
                 indexed.append({'artifact': artifact.key, 'episode_uuid': remembered['uuid']})
 
             save_index_state(self.project.index_state_path, state)
             return indexed
 
-    async def bootstrap_history(
+    async def import_history_sessions(
         self,
         *,
+        session_ids: list[str] | None = None,
         history_days: int = 90,
         discovery: BootstrapDiscovery | None = None,
     ) -> list[dict[str, str]]:
@@ -1015,8 +957,11 @@ class MemoryEngine:
             )
             sessions_state = history_state.setdefault('sessions', {})
             imported: list[dict[str, str]] = []
+            selected_session_ids = set(session_ids or [])
 
             for session in discovery.all_sessions():
+                if selected_session_ids and session.session_id not in selected_session_ids:
+                    continue
                 previous = sessions_state.get(session.session_id, {})
                 if previous.get('fingerprint') == session.fingerprint:
                     continue
@@ -1047,37 +992,13 @@ class MemoryEngine:
                     )
                     source_episode_uuids.append(episode.uuid)
 
-                extracted_memories = await self._extract_durable_memories(
-                    title=session.title,
-                    content=session.content,
-                    source_kind='history transcript',
-                )
-                memory_episode_uuids: list[str] = []
-                for memory in extracted_memories:
-                    stored = await self._remember_unlocked(
-                        kind=memory.kind,
-                        summary=memory.summary,
-                        details=memory.details,
-                        source=f'{session.source_agent} bootstrap',
-                        tags=memory.tags,
-                        provenance={
-                            'Source Agent': session.source_agent,
-                            'Session ID': session.session_id,
-                            'Thread Title': session.title,
-                            'Captured From': 'history bootstrap',
-                        },
-                        captured_at=session.created_at,
-                        prefer_plain_episode=True,
-                    )
-                    memory_episode_uuids.append(stored['uuid'])
-
                 sessions_state[session.session_id] = {
                     'fingerprint': session.fingerprint,
                     'source_agent': session.source_agent,
                     'thread_title': session.title,
                     'created_at': session.created_at.isoformat(),
                     'source_episode_uuids': source_episode_uuids,
-                    'memory_episode_uuids': memory_episode_uuids,
+                    'memory_episode_uuids': [],
                     'source_path': session.source_path,
                 }
                 imported.append(
@@ -1091,6 +1012,17 @@ class MemoryEngine:
             history_state['last_bootstrap_at'] = utc_now().isoformat()
             save_index_state(self.project.index_state_path, state)
             return imported
+
+    async def bootstrap_history(
+        self,
+        *,
+        history_days: int = 90,
+        discovery: BootstrapDiscovery | None = None,
+    ) -> list[dict[str, str]]:
+        return await self.import_history_sessions(
+            history_days=history_days,
+            discovery=discovery,
+        )
 
     async def doctor(self) -> str:
         records = await self._query_records(
@@ -1106,14 +1038,18 @@ class MemoryEngine:
         artifact_count = len(state.get('artifacts', {}))
         history_state = state.get('history_bootstrap', {})
         imported_session_count = len(history_state.get('sessions', {}))
-        llm_status = 'configured' if self.structured_memory_enabled else 'episode-only fallback'
+        structured_status = (
+            'enabled'
+            if self.structured_memory_enabled
+            else 'disabled (agent-driven MCP workflow does not require it)'
+        )
         lines = [
             f'Project: {self.config.project_name}',
             f'Project ID: {self.config.project_id}',
             f'Backend: {self.config.backend.value}',
             f'Database: {self.project.database_path}',
             f'State dir: {self.project.state_dir}',
-            f'Memory mode: {llm_status}',
+            f'Structured graph extraction: {structured_status}',
             'MCP: available via `graphiti mcp --transport stdio`',
             f'Episodes: {episode_count}',
             f'Indexed artifacts: {artifact_count}',

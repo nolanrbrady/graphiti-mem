@@ -7,15 +7,100 @@ from pathlib import Path
 from typing import Any
 
 from .engine import MemoryEngine
-from .models import MemoryKind
+from .models import BackendType, MemoryKind
 
 PROTOCOL_VERSION = '2024-11-05'
 
 
+def _json_text(payload: Any) -> str:
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
 def _tool_definitions() -> list[dict[str, Any]]:
+    memory_kind_values = [kind.value for kind in MemoryKind]
+    backend_values = [backend.value for backend in BackendType]
     return [
         {
-            'name': 'recall',
+            'name': 'init_project',
+            'description': 'Initialize Graphiti for the current project and return onboarding state.',
+            'inputSchema': {
+                'type': 'object',
+                'properties': {
+                    'force': {'type': 'boolean', 'default': False},
+                    'backend': {'type': 'string', 'enum': backend_values},
+                    'apply_agents': {'type': 'boolean', 'default': False},
+                    'history_days': {'type': 'integer', 'default': 90},
+                },
+            },
+        },
+        {
+            'name': 'discover_history',
+            'description': 'Inspect whether Codex or Claude project history is available locally.',
+            'inputSchema': {
+                'type': 'object',
+                'properties': {'history_days': {'type': 'integer', 'default': 90}},
+            },
+        },
+        {
+            'name': 'list_history_sessions',
+            'description': 'List project-matching Codex and Claude history sessions.',
+            'inputSchema': {
+                'type': 'object',
+                'properties': {
+                    'history_days': {'type': 'integer', 'default': 90},
+                    'limit': {'type': 'integer'},
+                },
+            },
+        },
+        {
+            'name': 'read_history_session',
+            'description': 'Read a chunk of one project-matching history session.',
+            'inputSchema': {
+                'type': 'object',
+                'properties': {
+                    'session_id': {'type': 'string'},
+                    'history_days': {'type': 'integer', 'default': 90},
+                    'offset': {'type': 'integer', 'default': 0},
+                    'max_chars': {'type': 'integer', 'default': 6000},
+                },
+                'required': ['session_id'],
+            },
+        },
+        {
+            'name': 'import_history_sessions',
+            'description': 'Store selected history sessions as source episodes with provenance, without distilling memory automatically.',
+            'inputSchema': {
+                'type': 'object',
+                'properties': {
+                    'session_ids': {'type': 'array', 'items': {'type': 'string'}},
+                    'history_days': {'type': 'integer', 'default': 90},
+                },
+            },
+        },
+        {
+            'name': 'apply_agents_instructions',
+            'description': 'Apply or refresh the managed Graphiti block in AGENTS.md.',
+            'inputSchema': {'type': 'object', 'properties': {}},
+        },
+        {
+            'name': 'store_memory',
+            'description': 'Persist durable project memory.',
+            'inputSchema': {
+                'type': 'object',
+                'properties': {
+                    'kind': {'type': 'string', 'enum': memory_kind_values},
+                    'summary': {'type': 'string'},
+                    'details': {'type': 'string'},
+                    'source': {'type': 'string'},
+                    'tags': {'type': 'array', 'items': {'type': 'string'}},
+                    'artifact_path': {'type': 'string'},
+                    'provenance': {'type': 'object'},
+                },
+                'required': ['kind', 'summary'],
+            },
+        },
+        {
+            'name': 'recall_memory',
             'description': 'Recall relevant project memory for a task or question.',
             'inputSchema': {
                 'type': 'object',
@@ -27,24 +112,8 @@ def _tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
-            'name': 'remember',
-            'description': 'Persist durable project memory.',
-            'inputSchema': {
-                'type': 'object',
-                'properties': {
-                    'kind': {'type': 'string', 'enum': [kind.value for kind in MemoryKind]},
-                    'summary': {'type': 'string'},
-                    'details': {'type': 'string'},
-                    'source': {'type': 'string'},
-                    'tags': {'type': 'array', 'items': {'type': 'string'}},
-                    'artifact_path': {'type': 'string'},
-                },
-                'required': ['kind', 'summary'],
-            },
-        },
-        {
-            'name': 'index',
-            'description': 'Index high-signal project artifacts.',
+            'name': 'index_project',
+            'description': 'Index high-signal project artifacts without distilling durable memory automatically.',
             'inputSchema': {
                 'type': 'object',
                 'properties': {
@@ -57,6 +126,46 @@ def _tool_definitions() -> list[dict[str, Any]]:
             'name': 'doctor',
             'description': 'Inspect local Graphiti memory health.',
             'inputSchema': {'type': 'object', 'properties': {}},
+        },
+        {
+            'name': 'remember',
+            'description': 'Alias for store_memory.',
+            'inputSchema': {
+                'type': 'object',
+                'properties': {
+                    'kind': {'type': 'string', 'enum': memory_kind_values},
+                    'summary': {'type': 'string'},
+                    'details': {'type': 'string'},
+                    'source': {'type': 'string'},
+                    'tags': {'type': 'array', 'items': {'type': 'string'}},
+                    'artifact_path': {'type': 'string'},
+                    'provenance': {'type': 'object'},
+                },
+                'required': ['kind', 'summary'],
+            },
+        },
+        {
+            'name': 'recall',
+            'description': 'Alias for recall_memory.',
+            'inputSchema': {
+                'type': 'object',
+                'properties': {
+                    'query': {'type': 'string'},
+                    'limit': {'type': 'integer', 'default': 8},
+                },
+                'required': ['query'],
+            },
+        },
+        {
+            'name': 'index',
+            'description': 'Alias for index_project.',
+            'inputSchema': {
+                'type': 'object',
+                'properties': {
+                    'changed_only': {'type': 'boolean', 'default': True},
+                    'max_files': {'type': 'integer', 'default': 24},
+                },
+            },
         },
     ]
 
@@ -90,29 +199,90 @@ def _write_message(message: dict[str, Any]) -> None:
 
 
 async def _call_tool(root: Path, name: str, arguments: dict[str, Any]) -> str:
+    if name == 'init_project':
+        requested_backend = BackendType(arguments['backend']) if arguments.get('backend') else None
+        config = MemoryEngine.default_runtime_config(
+            root, backend=MemoryEngine.choose_backend(root, requested_backend=requested_backend)
+        )
+        paths, config = MemoryEngine.init_project(
+            root,
+            force=bool(arguments.get('force', False)),
+            config=config,
+        )
+        agents_path = None
+        if bool(arguments.get('apply_agents', False)):
+            agents_path = MemoryEngine.apply_managed_agents_block(root)
+        payload = MemoryEngine.detect_onboarding_state(
+            root,
+            history_days=int(arguments.get('history_days', 90)),
+            requested_backend=requested_backend,
+        )
+        payload['configured_backend'] = config.backend.value
+        payload['config_path'] = str(paths.config_path)
+        payload['agents_updated'] = bool(agents_path is not None)
+        if agents_path is not None:
+            payload['agents_path_updated'] = str(agents_path)
+        return _json_text(payload)
+
+    if name == 'apply_agents_instructions':
+        return _json_text({'agents_path': str(MemoryEngine.apply_managed_agents_block(root))})
+
+    if name == 'discover_history':
+        payload = MemoryEngine.detect_onboarding_state(
+            root,
+            history_days=int(arguments.get('history_days', 90)),
+        )
+        return _json_text(payload)
+
     async with await MemoryEngine.open(root) as engine:
-        if name == 'recall':
-            return await engine.recall(arguments['query'], limit=int(arguments.get('limit', 8)))
-        if name == 'remember':
+        if name == 'list_history_sessions':
+            payload = engine.list_history_sessions(
+                history_days=int(arguments.get('history_days', 90)),
+                limit=int(arguments['limit']) if arguments.get('limit') is not None else None,
+            )
+            return _json_text(payload)
+
+        if name == 'read_history_session':
+            payload = engine.read_history_session(
+                arguments['session_id'],
+                history_days=int(arguments.get('history_days', 90)),
+                offset=int(arguments.get('offset', 0)),
+                max_chars=int(arguments.get('max_chars', 6000)),
+            )
+            return _json_text(payload)
+
+        if name == 'import_history_sessions':
+            payload = await engine.import_history_sessions(
+                session_ids=list(arguments.get('session_ids') or []),
+                history_days=int(arguments.get('history_days', 90)),
+            )
+            return _json_text(payload)
+
+        if name in {'store_memory', 'remember'}:
             result = await engine.remember(
                 kind=MemoryKind(arguments['kind']),
                 summary=arguments['summary'],
                 details=arguments.get('details', ''),
                 source=arguments.get('source', 'mcp'),
-                tags=arguments.get('tags') or [],
+                tags=list(arguments.get('tags') or []),
                 artifact_path=arguments.get('artifact_path', ''),
+                provenance=dict(arguments.get('provenance') or {}),
             )
-            return f'Stored memory as {result["uuid"]} ({result["mode"]}).'
-        if name == 'index':
+            return _json_text(result)
+
+        if name in {'recall_memory', 'recall'}:
+            return await engine.recall(arguments['query'], limit=int(arguments.get('limit', 8)))
+
+        if name in {'index_project', 'index'}:
             indexed = await engine.index(
                 changed_only=bool(arguments.get('changed_only', True)),
                 max_files=int(arguments.get('max_files', 24)),
             )
-            if not indexed:
-                return 'No artifacts needed re-indexing.'
-            return f'Indexed {len(indexed)} artifact(s).'
+            return _json_text(indexed)
+
         if name == 'doctor':
             return await engine.doctor()
+
     raise ValueError(f'Unsupported tool: {name}')
 
 
