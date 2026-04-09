@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 import sys
 from pathlib import Path
 
@@ -140,16 +139,13 @@ async def _run_init(args: argparse.Namespace) -> int:
 
     if args.import_history:
         import_history = history_count > 0
-    elif args.skip_history or history_count == 0:
+    elif args.skip_history or history_count == 0 or args.yes or not interactive:
         import_history = False
-    elif args.yes:
-        import_history = True
-    elif not interactive:
-        import_history = not large_history
     else:
         import_history = _prompt_yes_no(
-            f'Import {history_count} matching Codex/Claude project sessions from the last {args.history_days} days?',
-            default=not large_history,
+            f'Import {history_count} matching Codex/Claude project sessions as source evidence now? '
+            'This stores raw transcript episodes only; the agent should decide what durable memory to write.',
+            default=False if not large_history else False,
             interactive=interactive,
         )
 
@@ -158,7 +154,7 @@ async def _run_init(args: argparse.Namespace) -> int:
 
     async with await MemoryEngine.open(paths.root) as engine:
         if import_history and history_count:
-            imported = await engine.bootstrap_history(
+            imported = await engine.import_history_sessions(
                 history_days=args.history_days,
                 discovery=history_discovery,
             )
@@ -166,22 +162,20 @@ async def _run_init(args: argparse.Namespace) -> int:
     print(f'Initialized Graphiti local memory in {paths.state_dir}')
     print(f'- Backend: {config.backend.value}')
     print(
-        f'- Structured extraction: {"configured" if config.llm_base_url or os.getenv(config.llm_api_key_env, "") else "episode-only until an OpenAI-compatible endpoint is configured"}'
+        '- Agent-driven onboarding: enabled (no separate OpenAI-compatible endpoint required for init/history inspection)'
     )
     if history_count:
         print(f'- Matching transcript sessions detected: {history_count}')
         if imported:
-            print(f'- Imported transcript sessions: {len(imported)}')
+            print(f'- Imported transcript source sessions: {len(imported)}')
         elif import_history:
-            print(
-                '- Imported transcript sessions: 0 (already imported or no durable content found)'
-            )
+            print('- Imported transcript source sessions: 0 (already imported)')
         elif large_history and not interactive and not args.import_history:
             print(
-                f'- Transcript import skipped automatically because {history_count} sessions exceeded the default non-interactive threshold'
+                '- Transcript source import skipped by default; use `--import-history` or MCP tools if you want to register prior sessions'
             )
         else:
-            print('- Transcript import skipped')
+            print('- Transcript source import skipped')
     else:
         print('- Matching transcript sessions detected: 0')
     if agents_path is not None:
@@ -196,8 +190,13 @@ async def _run_init(args: argparse.Namespace) -> int:
     print('')
     print('Recommended next steps:')
     print('- Run `graphiti doctor` to verify backend and bootstrap status.')
-    print('- Run `graphiti recall "<current task>"` before broad code search.')
-    print('- Run `graphiti index --changed` after major code changes.')
+    print('- Prefer MCP tools for onboarding and memory management inside Codex.')
+    print(
+        '- Use `graphiti recall "<current task>"` and `graphiti remember ...` as local dev/test equivalents.'
+    )
+    print(
+        '- Use `graphiti index --changed` to register project artifacts without automatic distillation.'
+    )
     return 0
 
 
