@@ -25,6 +25,7 @@ from graphiti_core.memory.benchmark.models import (
 from graphiti_core.memory.benchmark.runner import (
     _history_trace_candidate_ids,
     _memory_candidate_ids,
+    _multi_hop_trace_candidate_ids,
     _channel_result,
     benchmark_doctor,
     compare_results,
@@ -208,6 +209,46 @@ def test_history_trace_candidate_ids_prioritize_selected_history_match() -> None
         'thread:Autoresearch reward loop',
     ]
     assert candidate_ids[-1] == 'artifact:docs/history.md'
+
+
+def test_multi_hop_trace_candidate_ids_prioritize_selected_thread_and_artifact_sources() -> None:
+    selected_pattern = ParsedMemoryEpisode(
+        uuid='episode-pattern',
+        kind=MemoryKind.pattern,
+        summary='Pair naive source scan control against Graphiti recall treatment',
+        details='Use paired execution.',
+        source='agent',
+        source_agent='codex',
+        session_id='session-benchmark-loop',
+        thread_title='Autoresearch reward loop',
+    )
+    selected_doc = ParsedMemoryEpisode(
+        uuid='episode-doc',
+        kind=MemoryKind.index_artifact,
+        summary='The benchmark uses paired execution',
+        details='docs/benchmarking.md',
+        source='artifact',
+        artifact_path='docs/benchmarking.md',
+    )
+    leftover_artifact = ParsedMemoryEpisode(
+        uuid='episode-leftover',
+        kind=MemoryKind.index_artifact,
+        summary='Use make test to run tests',
+        details='README.md',
+        source='artifact',
+        artifact_path='README.md',
+    )
+
+    candidate_ids = _multi_hop_trace_candidate_ids(
+        [selected_pattern, selected_doc],
+        [selected_doc, selected_pattern, leftover_artifact],
+    )
+
+    assert candidate_ids[:3] == [
+        'thread:Autoresearch reward loop',
+        'artifact:docs/benchmarking.md',
+        'artifact:README.md',
+    ]
 
 
 def test_telemetry_rollout_and_sqlite_metrics(tmp_path: Path) -> None:

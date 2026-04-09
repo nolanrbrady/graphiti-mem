@@ -221,6 +221,26 @@ def _history_trace_candidate_ids(
     return _dedupe_preserve(candidate_ids)
 
 
+def _multi_hop_trace_candidate_ids(
+    selected_memories: list[ParsedMemoryEpisode],
+    ranked_memories: list[ParsedMemoryEpisode],
+) -> list[str]:
+    selected_ids = {memory.uuid for memory in selected_memories}
+    ordered_memories = [*selected_memories, *[m for m in ranked_memories if m.uuid not in selected_ids]]
+    candidate_ids: list[str] = []
+    for prefix in ('thread:', 'artifact:', 'memory:', 'session:'):
+        for memory in ordered_memories:
+            candidate_ids.extend(
+                candidate_id
+                for candidate_id in _memory_candidate_ids(
+                    memory,
+                    task_type=BenchmarkTaskType.multi_hop_recall,
+                )
+                if candidate_id.startswith(prefix)
+            )
+    return _dedupe_preserve(candidate_ids)
+
+
 def _memory_rank(engine: MemoryEngine, memory: ParsedMemoryEpisode, query: str) -> tuple[int, int, float, str]:
     return (
         engine._memory_overlap_score(memory, query),
@@ -456,6 +476,11 @@ async def _collect_treatment_channel(
             selected_memories,
             ranked_memories,
             query=fixture.query,
+        )
+    elif fixture.task_type is BenchmarkTaskType.multi_hop_recall:
+        candidate_ids = _multi_hop_trace_candidate_ids(
+            selected_memories,
+            ranked_memories,
         )
     else:
         candidate_ids = _dedupe_preserve(
