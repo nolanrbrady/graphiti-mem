@@ -256,11 +256,11 @@ async def _run_init(args: argparse.Namespace) -> int:
     print('- `graphiti mcp --transport stdio`')
     print('')
     print('Recommended next steps:')
-    print('- Run `graphiti doctor` to verify backend and bootstrap status.')
-    print(
-        '- If semantic bootstrap is pending, ask the user before running '
-        '`graphiti bootstrap` or `graphiti bootstrap --agent codex`.'
-    )
+    if onboarding_state['bootstrap_status'] == 'pending':
+        print('- Next command: `graphiti bootstrap --agent codex`.')
+        print('- After bootstrap, run `graphiti doctor` to verify backend and final status.')
+    else:
+        print('- Run `graphiti doctor` to verify backend and bootstrap status.')
     print('- Prefer MCP tools for onboarding and memory management inside Codex.')
     print(
         '- Use `graphiti recall "<current task>"` and `graphiti remember ...` as local dev/test equivalents.'

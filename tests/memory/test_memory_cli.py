@@ -223,6 +223,7 @@ def test_cli_init_applies_managed_agents_block(
     assert 'Initialized Graphiti local memory' in out
     assert 'graphiti mcp --transport stdio' in out
     assert 'Left Codex MCP config unchanged' in out
+    assert 'Next command: `graphiti bootstrap --agent codex`.' in out
     assert GRAPHITI_BLOCK_START in agents_text
     assert GRAPHITI_BLOCK_END in agents_text
     assert 'If `bootstrap_pending = true`' in agents_text
@@ -434,6 +435,8 @@ def test_init_detects_recent_project_codex_history_for_semantic_bootstrap(
 
     assert '- Semantic bootstrap status: pending' in init_out
     assert '- Bootstrap artifact lane:' in init_out
+    assert '- Next command: `graphiti bootstrap --agent codex`.' in init_out
+    assert '- After bootstrap, run `graphiti doctor` to verify backend and final status.' in init_out
 
     assert main(['bootstrap']) == 0
 
