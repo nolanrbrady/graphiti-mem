@@ -25,14 +25,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     init_parser.add_argument('--yes', action='store_true', help='Accept default onboarding choices')
     init_parser.add_argument(
-        '--import-history',
-        action='store_true',
-        help='Import local project transcript history during setup',
-    )
-    init_parser.add_argument(
-        '--skip-history', action='store_true', help='Skip transcript history import during setup'
-    )
-    init_parser.add_argument(
         '--apply-agents', action='store_true', help='Apply the managed Graphiti block to AGENTS.md'
     )
     init_parser.add_argument(
@@ -57,7 +49,22 @@ def build_parser() -> argparse.ArgumentParser:
         '--history-days',
         type=int,
         default=90,
-        help='Maximum age of project transcript history to import',
+        help='Maximum age of project transcript history to inspect for semantic bootstrap',
+    )
+
+    bootstrap_parser = subparsers.add_parser(
+        'bootstrap', help='Run semantic bootstrap for recent history and high-signal repo artifacts'
+    )
+    bootstrap_parser.add_argument(
+        '--history-days',
+        type=int,
+        default=90,
+        help='Maximum age of project transcript history to process',
+    )
+    bootstrap_parser.add_argument(
+        '--force',
+        action='store_true',
+        help='Reprocess matching sessions even when fingerprints are unchanged',
     )
 
     recall_parser = subparsers.add_parser(
@@ -128,11 +135,21 @@ async def _run_init(args: argparse.Namespace) -> int:
         requested_backend=BackendType(args.backend) if args.backend else None,
     )
     config = MemoryEngine.default_runtime_config(root, backend=backend)
-    paths, config = MemoryEngine.init_project(root, force=args.force, config=config)
+    paths, config = MemoryEngine.init_project(
+        root,
+        force=args.force,
+        config=config,
+        history_days=args.history_days,
+    )
 
     history_discovery = MemoryEngine.discover_history(paths.root, history_days=args.history_days)
+    onboarding_state = MemoryEngine.sync_semantic_bootstrap_state(
+        paths.root,
+        history_days=args.history_days,
+        discovery=history_discovery,
+        requested_backend=backend,
+    )
     history_count = history_discovery.total_sessions
-    large_history = history_count > MemoryEngine.bootstrap_warning_threshold()
 
     if args.apply_agents:
         apply_agents = True
@@ -154,18 +171,6 @@ async def _run_init(args: argparse.Namespace) -> int:
     else:
         install_mcp = False
 
-    if args.import_history:
-        import_history = history_count > 0
-    elif args.skip_history or history_count == 0 or args.yes or not interactive:
-        import_history = False
-    else:
-        import_history = _prompt_yes_no(
-            f'Import {history_count} matching Codex/Claude project sessions as source evidence now? '
-            'This stores raw transcript episodes only; the agent should decide what durable memory to write.',
-            default=False if not large_history else False,
-            interactive=interactive,
-        )
-
     agents_path = apply_agent_instructions(paths.root) if apply_agents else None
     codex_config = None
     codex_config_changed = False
@@ -173,14 +178,6 @@ async def _run_init(args: argparse.Namespace) -> int:
         codex_config, codex_config_changed = install_codex_mcp_server(
             python_executable=sys.executable
         )
-    imported: list[dict[str, str]] = []
-
-    async with await MemoryEngine.open(paths.root) as engine:
-        if import_history and history_count:
-            imported = await engine.import_history_sessions(
-                history_days=args.history_days,
-                discovery=history_discovery,
-            )
 
     print(f'Initialized Graphiti local memory in {paths.state_dir}')
     print(f'- Backend: {config.backend.value}')
@@ -189,18 +186,18 @@ async def _run_init(args: argparse.Namespace) -> int:
     )
     if history_count:
         print(f'- Matching transcript sessions detected: {history_count}')
-        if imported:
-            print(f'- Imported transcript source sessions: {len(imported)}')
-        elif import_history:
-            print('- Imported transcript source sessions: 0 (already imported)')
-        elif large_history and not interactive and not args.import_history:
-            print(
-                '- Transcript source import skipped by default; use `--import-history` or MCP tools if you want to register prior sessions'
-            )
-        else:
-            print('- Transcript source import skipped')
     else:
         print('- Matching transcript sessions detected: 0')
+    print(
+        '- Bootstrap history lane: '
+        f'{onboarding_state["bootstrap_processed_sessions"]}/{onboarding_state["bootstrap_eligible_sessions"]} current sessions processed'
+    )
+    print(
+        '- Bootstrap artifact lane: '
+        f'{onboarding_state["bootstrap_artifact_processed"]}/{onboarding_state["bootstrap_artifact_candidates"]} artifacts distilled, '
+        f'{onboarding_state["bootstrap_artifact_indexed"]} indexed'
+    )
+    print(f'- Semantic bootstrap status: {onboarding_state["bootstrap_status"]}')
     if agents_path is not None:
         print(f'- Updated agent instructions: {agents_path}')
     else:
@@ -218,6 +215,7 @@ async def _run_init(args: argparse.Namespace) -> int:
     print('')
     print('Recommended next steps:')
     print('- Run `graphiti doctor` to verify backend and bootstrap status.')
+    print('- If semantic bootstrap is pending, ask the user before running `graphiti bootstrap`.')
     print('- Prefer MCP tools for onboarding and memory management inside Codex.')
     print(
         '- Use `graphiti recall "<current task>"` and `graphiti remember ...` as local dev/test equivalents.'
@@ -231,6 +229,40 @@ async def _run_init(args: argparse.Namespace) -> int:
 async def _run_async(args: argparse.Namespace) -> int:
     if args.command == 'init':
         return await _run_init(args)
+
+    if args.command == 'bootstrap':
+        async with await MemoryEngine.open(Path.cwd()) as engine:
+            discovery = MemoryEngine.discover_history(Path.cwd(), history_days=args.history_days)
+            result = await engine.semantic_bootstrap(
+                history_days=args.history_days,
+                discovery=discovery,
+                force=bool(args.force),
+            )
+
+        print(f'Semantic bootstrap processed {result["processed_count"]} history session(s).')
+        print('- History durable memories created: ' + str(result['durable_memories_created']))
+        print(
+            '- Artifact candidates indexed: '
+            + f'{result["bootstrap_artifact_indexed"]}/{result["bootstrap_artifact_candidates"]}'
+        )
+        print(
+            '- Artifact memories distilled: '
+            + f'{result["bootstrap_artifact_processed"]}/{result["bootstrap_artifact_candidates"]}'
+        )
+        print('- Artifact lane status: ' + result['bootstrap_artifact_status'])
+        print(
+            '- Structured graph extraction: '
+            + ('available' if result['bootstrap_structured_graph_available'] else 'unavailable')
+        )
+        print('- Bootstrap status: ' + result['bootstrap_status'])
+        if result['pending_artifacts']:
+            print('- Pending bootstrap artifacts:')
+            for artifact in result['pending_artifacts'][:8]:
+                print(
+                    f'  - {artifact["artifact_path"]} [{artifact["artifact_type"]}] '
+                    + ', '.join(artifact['reasons'])
+                )
+        return 0
 
     if args.command == 'mcp':
         await run_stdio_mcp_server(Path.cwd())

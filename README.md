@@ -59,7 +59,7 @@ Initialize memory in a repo:
 graphiti init
 ```
 
-`graphiti init` now acts as a local development onboarding flow. It creates `.graphiti/`, detects project-local Codex or Claude transcript history from disk, can optionally register those sessions as source episodes, and can update `AGENTS.md` with a managed Graphiti block.
+`graphiti init` now acts as a local development onboarding flow. It creates `.graphiti/`, detects project-local Codex or Claude transcript history from disk, bootstraps those sessions into source evidence plus durable memory by default, and can update `AGENTS.md` with a managed Graphiti block.
 If you want Codex to know about Graphiti globally, `graphiti init --install-mcp` installs a `graphiti` MCP server entry into `~/.codex/config.toml` using the current Python executable.
 
 Store a durable memory:
@@ -148,7 +148,7 @@ For normal Codex usage, prefer the MCP server and let the agent handle reasoning
 - selected docs
 - optional recent git history summary
 
-During onboarding, Graphiti can also register project-matching Codex and Claude conversations stored on disk as source evidence. That import is scoped to the current repo and defaults to the last 90 days. Durable memory extraction from those transcripts is expected to be agent-driven through MCP, not performed automatically by the engine.
+During onboarding, Graphiti can also register project-matching Codex and Claude conversations stored on disk as source evidence and distill durable memory from them. That bootstrap is scoped to the current repo, defaults to the last 90 days, and can take several minutes on larger histories.
 
 ## Fallback Modes
 

@@ -44,6 +44,7 @@ class FakeEngine:
         self.remember_calls: list[dict[str, Any]] = []
         self.index_calls: list[dict[str, Any]] = []
         self.recall_calls: list[dict[str, Any]] = []
+        self.bootstrap_calls: list[dict[str, Any]] = []
 
     async def recall(self, query: str, limit: int = 8) -> str:
         self.recall_calls.append({'query': query, 'limit': limit})
@@ -54,9 +55,19 @@ class FakeEngine:
         return {'uuid': 'memory-1', 'mode': 'episode'}
 
     async def index(
-        self, *, changed_only: bool = False, max_files: int = 24
+        self,
+        *,
+        changed_only: bool = False,
+        max_files: int = 24,
+        artifact_paths: list[str] | None = None,
     ) -> list[dict[str, str]]:
-        self.index_calls.append({'changed_only': changed_only, 'max_files': max_files})
+        self.index_calls.append(
+            {
+                'changed_only': changed_only,
+                'max_files': max_files,
+                'artifact_paths': artifact_paths or [],
+            }
+        )
         if changed_only:
             return []
         return [{'artifact': 'README.md', 'episode_uuid': 'episode-1'}]
@@ -84,22 +95,111 @@ class FakeEngine:
             'content': 'bootstrap text',
         }
 
+    def list_bootstrap_artifacts(self, *, pending_only: bool = False, limit: int | None = None):
+        items = [
+            {
+                'artifact_path': 'AGENTS.md',
+                'artifact_type': 'instructions',
+                'reasons': ['agent guidance'],
+                'content_length': 128,
+                'fingerprint': 'artifact-fp',
+                'indexed': True,
+                'processed': False,
+                'status': 'indexed',
+                'index_episode_uuid': 'episode-1',
+                'durable_memory_count': 0,
+            }
+        ]
+        if pending_only:
+            items = [item for item in items if not item['processed']]
+        if limit is not None:
+            items = items[:limit]
+        return items
+
     async def import_history_sessions(
         self,
         *,
         session_ids: list[str] | None = None,
         history_days: int = 90,
         discovery: BootstrapDiscovery | None = None,
+        distill_memories: bool = True,
+        force: bool = False,
     ) -> list[dict[str, str]]:
-        del discovery
+        del distill_memories, force
+        if session_ids is not None:
+            selected_ids = session_ids
+        elif discovery is not None:
+            selected_ids = [session.session_id for session in discovery.all_sessions()]
+        else:
+            selected_ids = ['default-session']
         return [
             {
                 'session_id': session_id,
                 'source_agent': 'codex',
                 'thread_title': f'thread:{history_days}',
+                'memory_count': '1',
             }
-            for session_id in (session_ids or ['default-session'])
+            for session_id in selected_ids
         ]
+
+    async def bootstrap_history(
+        self,
+        *,
+        session_ids: list[str] | None = None,
+        history_days: int = 90,
+        discovery: BootstrapDiscovery | None = None,
+        force: bool = False,
+        distill_memories: bool = True,
+    ) -> list[dict[str, str]]:
+        self.bootstrap_calls.append(
+            {
+                'session_ids': session_ids,
+                'history_days': history_days,
+                'force': force,
+                'distill_memories': distill_memories,
+            }
+        )
+        return await self.import_history_sessions(
+            session_ids=session_ids,
+            history_days=history_days,
+            discovery=discovery,
+            distill_memories=distill_memories,
+            force=force,
+        )
+
+    async def semantic_bootstrap(
+        self,
+        *,
+        session_ids: list[str] | None = None,
+        history_days: int = 90,
+        discovery: BootstrapDiscovery | None = None,
+        force: bool = False,
+        distill_memories: bool = True,
+    ) -> dict[str, Any]:
+        processed_sessions = await self.bootstrap_history(
+            session_ids=session_ids,
+            history_days=history_days,
+            discovery=discovery,
+            force=force,
+            distill_memories=distill_memories,
+        )
+        return {
+            'processed_sessions': processed_sessions,
+            'processed_count': len(processed_sessions),
+            'durable_memories_created': len(processed_sessions),
+            'indexed_artifacts': await self.index(changed_only=not force, max_files=24),
+            'indexed_artifact_count': 1,
+            'bootstrap_status': 'pending',
+            'bootstrap_pending': True,
+            'bootstrap_completed_at': '',
+            'bootstrap_structured_graph_available': False,
+            'bootstrap_artifact_status': 'incomplete',
+            'bootstrap_artifact_candidates': 1,
+            'bootstrap_artifact_indexed': 1,
+            'bootstrap_artifact_processed': 0,
+            'bootstrap_artifact_durable_memories': 0,
+            'pending_artifacts': self.list_bootstrap_artifacts(pending_only=True, limit=12),
+        }
 
 
 def build_engine(root: Path) -> MemoryEngine:
@@ -159,7 +259,7 @@ def test_apply_agent_instructions_creates_and_replaces_managed_block(tmp_path: P
     agents_path = config.apply_agent_instructions(tmp_path)
     created = agents_path.read_text()
     assert config.GRAPHITI_BLOCK_START in created
-    assert 'MCP recall triggers:' in created
+    assert 'MCP bootstrap gate:' in created
     assert 'MCP write triggers:' in created
 
     agents_path.write_text(
@@ -214,8 +314,8 @@ def test_load_index_state_defaults_and_normalization(tmp_path: Path) -> None:
     loaded = config.load_index_state(state_path)
 
     assert loaded['artifacts']['README.md']['fingerprint'] == 'abc'
-    assert loaded['history_bootstrap']['sessions'] == {}
-    assert loaded['history_bootstrap']['last_bootstrap_at'] == ''
+    assert loaded['semantic_bootstrap']['sessions'] == {}
+    assert loaded['semantic_bootstrap']['bootstrap_completed_at'] == ''
 
 
 def test_load_runtime_config_raises_for_missing_file(tmp_path: Path) -> None:
@@ -489,6 +589,8 @@ async def test_engine_choose_backend_detect_state_and_query_records(
     monkeypatch.setenv('HOME', str(root))
     state = MemoryEngine.detect_onboarding_state(root, history_days=30)
     assert state['history_sessions_detected'] == 1
+    assert state['bootstrap_pending'] is True
+    assert state['bootstrap_status'] == 'pending'
     assert state['backend'] == 'neo4j'
     assert state['codex_config_path'].endswith('.codex/config.toml')
     assert state['codex_mcp_installed'] is False
@@ -674,7 +776,7 @@ async def test_cli_init_prompt_and_large_history_paths(
     )
     fake_engine = FakeEngine()
     prompts: list[str] = []
-    answers = iter([False, True])
+    answers = iter([False])
 
     async def fake_open(_cwd: Path):
         return FakeContext(fake_engine)
@@ -693,7 +795,7 @@ async def test_cli_init_prompt_and_large_history_paths(
     monkeypatch.setattr(
         cli.MemoryEngine,
         'init_project',
-        staticmethod(lambda root, force=False, config=None: (paths, config_obj)),
+        staticmethod(lambda root, force=False, config=None, history_days=90: (paths, config_obj)),
     )
     monkeypatch.setattr(
         cli.MemoryEngine,
@@ -717,8 +819,6 @@ async def test_cli_init_prompt_and_large_history_paths(
         argparse.Namespace(
             force=False,
             yes=False,
-            import_history=False,
-            skip_history=False,
             apply_agents=False,
             no_apply_agents=False,
             install_mcp=False,
@@ -731,10 +831,10 @@ async def test_cli_init_prompt_and_large_history_paths(
 
     assert rc == 0
     assert prompts[0].startswith('Apply the managed Graphiti block')
-    assert prompts[1].startswith('Import 1 matching Codex/Claude project sessions')
     assert '- Updated agent instructions:' not in output
     assert '- Left Codex MCP config unchanged' in output
-    assert '- Imported transcript source sessions: 1' in output
+    assert '- Semantic bootstrap status: pending' in output
+    assert '- Bootstrap artifact lane:' in output
 
     large_discovery = BootstrapDiscovery(
         codex_sessions=[
@@ -760,8 +860,6 @@ async def test_cli_init_prompt_and_large_history_paths(
         argparse.Namespace(
             force=False,
             yes=False,
-            import_history=False,
-            skip_history=False,
             apply_agents=False,
             no_apply_agents=False,
             install_mcp=False,
@@ -773,7 +871,13 @@ async def test_cli_init_prompt_and_large_history_paths(
     output = capsys.readouterr().out
 
     assert rc == 0
-    assert 'Transcript source import skipped by default' in output
+    assert '- Matching transcript sessions detected: 12' in output
+
+    rc = await cli._run_async(argparse.Namespace(command='bootstrap', history_days=90, force=False))
+    output = capsys.readouterr().out
+
+    assert rc == 0
+    assert 'Semantic bootstrap processed 12 history session(s).' in output
 
 
 def test_cli_main_error_handling(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
@@ -1101,7 +1205,7 @@ async def test_engine_recall_index_import_and_doctor_paths(
         lambda **kwargs: asyncio.sleep(
             0,
             result={
-                'uuid': f'episode-{kwargs["artifact_path"] or kwargs["summary"]}',
+                'uuid': f'episode-{kwargs.get("artifact_path", "") or kwargs["summary"]}',
                 'mode': 'episode',
             },
         ),
@@ -1128,15 +1232,27 @@ async def test_engine_recall_index_import_and_doctor_paths(
     )
     monkeypatch.setattr(
         engine,
-        '_save_source_episode',
+        '_ingest_source_episode',
         lambda **kwargs: asyncio.sleep(
-            0, result=SimpleNamespace(uuid=f'source-{len(kwargs["content"])}')
+            0,
+            result={
+                'episode_uuid': f'source-{len(kwargs["content"])}',
+                'structured_graph_refs': {
+                    'episode_uuids': [],
+                    'episodic_edge_uuids': [],
+                    'node_uuids': [],
+                    'edge_uuids': [],
+                    'community_uuids': [],
+                    'community_edge_uuids': [],
+                },
+            },
         ),
     )
     imported = await engine.import_history_sessions(discovery=discovery)
     skipped = await engine.import_history_sessions(discovery=discovery, session_ids=['other'])
     bootstrapped = await engine.bootstrap_history(discovery=discovery)
     assert imported[0]['session_id'] == 'import-1'
+    assert int(imported[0]['memory_count']) >= 1
     assert skipped == []
     assert bootstrapped == []
 
@@ -1145,9 +1261,15 @@ async def test_engine_recall_index_import_and_doctor_paths(
         '_query_records',
         lambda query, **kwargs: asyncio.sleep(0, result=[{'episode_count': 7}]),
     )
+    monkeypatch.setattr(
+        MemoryEngine,
+        'discover_history',
+        classmethod(lambda cls, root, history_days=90: discovery),
+    )
     doctor = await engine.doctor()
     assert 'Episodes: 7' in doctor
-    assert 'History bootstrap sessions: 1' in doctor
+    assert 'Semantic bootstrap processed sessions: 1' in doctor
+    assert 'Semantic bootstrap durable memories:' in doctor
     assert 'Codex MCP installed:' in doctor
 
 
@@ -1157,6 +1279,7 @@ async def test_mcp_tool_definitions_and_stdio_dispatch(
 ) -> None:
     tools = {tool['name']: tool for tool in mcp._tool_definitions()}
     assert 'remember' in tools
+    assert 'semantic_bootstrap' in tools
     assert tools['init_project']['inputSchema']['properties']['backend']['enum'] == [
         'kuzu',
         'neo4j',
@@ -1213,7 +1336,7 @@ async def test_mcp_tool_definitions_and_stdio_dispatch(
         mcp.MemoryEngine,
         'init_project',
         staticmethod(
-            lambda root, force=False, config=None: (
+            lambda root, force=False, config=None, history_days=90: (
                 build_project_paths(root),
                 config
                 or RuntimeConfig(
@@ -1227,16 +1350,31 @@ async def test_mcp_tool_definitions_and_stdio_dispatch(
         'apply_managed_agents_block',
         staticmethod(lambda root: root / 'AGENTS.md'),
     )
+    onboarding_state = {
+        'configured': True,
+        'backend': BackendType.kuzu.value,
+        'history_sessions_detected': 1,
+        'bootstrap_status': 'pending',
+        'bootstrap_pending': True,
+        'bootstrap_eligible_sessions': 1,
+        'bootstrap_processed_sessions': 0,
+        'bootstrap_artifact_status': 'pending',
+        'bootstrap_artifact_candidates': 1,
+        'bootstrap_artifact_indexed': 0,
+        'bootstrap_artifact_processed': 0,
+        'bootstrap_artifact_durable_memories': 0,
+        'bootstrap_completed_at': '',
+        'bootstrap_structured_graph_available': False,
+        'mcp_command': 'graphiti mcp --transport stdio',
+        'codex_mcp_installed': True,
+    }
     monkeypatch.setattr(
         mcp.MemoryEngine,
         'detect_onboarding_state',
         classmethod(
             lambda cls, root, history_days=90, requested_backend=None: {
-                'configured': True,
+                **onboarding_state,
                 'backend': (requested_backend or BackendType.kuzu).value,
-                'history_sessions_detected': 0,
-                'mcp_command': 'graphiti mcp --transport stdio',
-                'codex_mcp_installed': True,
             }
         ),
     )
@@ -1247,6 +1385,7 @@ async def test_mcp_tool_definitions_and_stdio_dispatch(
     assert init_payload['configured_backend'] == 'kuzu'
     assert 'codex_mcp_updated' in init_payload
     assert init_payload['codex_mcp_updated'] is False
+    assert init_payload['bootstrap_pending'] is True
 
     monkeypatch.setattr(
         mcp,
@@ -1279,6 +1418,21 @@ async def test_mcp_tool_definitions_and_stdio_dispatch(
         )[0]['session_id']
         == 's1'
     )
+    assert (
+        json.loads(
+            await mcp._call_tool(tmp_path, 'import_history_sessions', {'session_ids': ['s1']})
+        )[0]['memory_count']
+        == '1'
+    )
+    artifact_payload = json.loads(
+        await mcp._call_tool(tmp_path, 'list_bootstrap_artifacts', {'pending_only': True})
+    )
+    assert artifact_payload[0]['artifact_path'] == 'AGENTS.md'
+    bootstrap_payload = json.loads(
+        await mcp._call_tool(tmp_path, 'semantic_bootstrap', {'history_days': 30})
+    )
+    assert bootstrap_payload['processed_count'] == 1
+    assert bootstrap_payload['bootstrap_artifact_status'] == 'incomplete'
     assert (
         json.loads(
             await mcp._call_tool(tmp_path, 'remember', {'kind': 'decision', 'summary': 'Prefer Y'})

@@ -201,7 +201,7 @@ async def test_init_creates_local_state(tmp_path: Path) -> None:
     instructions = paths.agent_instructions_path.read_text()
     assert 'graphiti recall "<current task>"' in instructions
     assert 'init_project' in instructions
-    assert 'At the start of each new task or after a context switch' in instructions
+    assert 'Before broad exploration, call `discover_history`' in instructions
     assert 'When you choose an approach, confirm a constraint, discover a pitfall' in instructions
 
 
@@ -213,7 +213,7 @@ def test_cli_init_applies_managed_agents_block(
     monkeypatch.setenv('HOME', str(fake_home))
     monkeypatch.chdir(tmp_path)
 
-    rc = main(['init', '--yes', '--skip-history', '--apply-agents'])
+    rc = main(['init', '--yes', '--apply-agents'])
     out = capsys.readouterr().out
     agents_text = (tmp_path / 'AGENTS.md').read_text()
     codex_config = fake_home / '.codex' / 'config.toml'
@@ -224,7 +224,7 @@ def test_cli_init_applies_managed_agents_block(
     assert 'Left Codex MCP config unchanged' in out
     assert GRAPHITI_BLOCK_START in agents_text
     assert GRAPHITI_BLOCK_END in agents_text
-    assert 'At the start of each new task or after a context switch' in agents_text
+    assert 'If `bootstrap_pending = true`' in agents_text
     assert not codex_config.exists()
 
 
@@ -236,7 +236,7 @@ def test_cli_init_can_install_codex_mcp_config(
     monkeypatch.setenv('HOME', str(fake_home))
     monkeypatch.chdir(tmp_path)
 
-    rc = main(['init', '--yes', '--skip-history', '--apply-agents', '--install-mcp'])
+    rc = main(['init', '--yes', '--apply-agents', '--install-mcp'])
     out = capsys.readouterr().out
     codex_config = fake_home / '.codex' / 'config.toml'
 
@@ -256,7 +256,7 @@ def test_cli_init_can_leave_agents_unchanged(
     monkeypatch.setenv('HOME', str(fake_home))
     monkeypatch.chdir(tmp_path)
 
-    rc = main(['init', '--yes', '--skip-history', '--no-apply-agents', '--no-install-mcp'])
+    rc = main(['init', '--yes', '--no-apply-agents', '--no-install-mcp'])
     out = capsys.readouterr().out
 
     assert rc == 0
@@ -275,8 +275,8 @@ def test_cli_init_is_idempotent_for_managed_agents_block(
     monkeypatch.setenv('HOME', str(fake_home))
     monkeypatch.chdir(tmp_path)
 
-    assert main(['init', '--yes', '--skip-history', '--apply-agents']) == 0
-    assert main(['init', '--yes', '--skip-history', '--apply-agents']) == 0
+    assert main(['init', '--yes', '--apply-agents']) == 0
+    assert main(['init', '--yes', '--apply-agents']) == 0
 
     agents_text = (tmp_path / 'AGENTS.md').read_text()
     assert agents_text.count(GRAPHITI_BLOCK_START) == 1
@@ -375,8 +375,8 @@ async def test_changed_only_reindex_updates_only_modified_artifacts(
     assert readme_episode_before != readme_episode_after
 
 
-def test_init_bootstraps_recent_project_codex_history(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_init_detects_recent_project_codex_history_for_semantic_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     write_project_files(tmp_path)
     fake_home = tmp_path / 'home'
@@ -414,7 +414,8 @@ def test_init_bootstraps_recent_project_codex_history(
         cwd=other_project,
     )
 
-    assert main(['init', '--yes', '--import-history', '--apply-agents']) == 0
+    assert main(['init', '--yes', '--apply-agents']) == 0
+    init_out = capsys.readouterr().out
 
     async def _assert_history() -> None:
         async with await MemoryEngine.open(tmp_path) as engine:
@@ -425,12 +426,29 @@ def test_init_bootstraps_recent_project_codex_history(
         assert 'Prefer pattern Y over pattern X because it avoids retries.' in str(
             session['content']
         )
-        assert 'History bootstrap sessions: 1' in doctor
+        assert 'Semantic bootstrap status: pending' in doctor
+        assert 'Semantic bootstrap processed sessions: 0' in doctor
 
     asyncio.run(_assert_history())
 
+    assert '- Semantic bootstrap status: pending' in init_out
+    assert '- Bootstrap artifact lane:' in init_out
 
-def test_init_bootstraps_codex_history_with_seconds_timestamp(
+    assert main(['bootstrap']) == 0
+
+    async def _assert_bootstrapped_history() -> None:
+        async with await MemoryEngine.open(tmp_path) as engine:
+            doctor = await engine.doctor()
+            recall = await engine.recall('pattern Y retries')
+        assert 'Semantic bootstrap status: pending' in doctor
+        assert 'Semantic bootstrap processed sessions: 1' in doctor
+        assert 'Semantic bootstrap artifact status: incomplete' in doctor
+        assert 'Prefer pattern Y over pattern X' in recall or 'Relevant Decisions' in recall
+
+    asyncio.run(_assert_bootstrapped_history())
+
+
+def test_bootstrap_processes_codex_history_with_seconds_timestamp(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     write_project_files(tmp_path)
@@ -449,19 +467,21 @@ def test_init_bootstraps_codex_history_with_seconds_timestamp(
         timestamp_unit='seconds',
     )
 
-    assert main(['init', '--yes', '--import-history', '--apply-agents']) == 0
+    assert main(['init', '--yes', '--apply-agents']) == 0
+    assert main(['bootstrap']) == 0
 
     async def _assert_history() -> None:
         async with await MemoryEngine.open(tmp_path) as engine:
             doctor = await engine.doctor()
             sessions = engine.list_history_sessions(history_days=90)
         assert any(item['session_id'] == 'seconds-timestamp' for item in sessions)
-        assert 'History bootstrap sessions: 1' in doctor
+        assert 'Semantic bootstrap processed sessions: 1' in doctor
+        assert 'Semantic bootstrap durable memories:' in doctor
 
     asyncio.run(_assert_history())
 
 
-def test_init_bootstraps_claude_history_and_ignores_noise(
+def test_bootstrap_processes_claude_history_and_ignores_noise(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     write_project_files(tmp_path)
@@ -477,15 +497,18 @@ def test_init_bootstraps_claude_history_and_ignores_noise(
         assistant_message='Run `make test` before broad code search and keep output concise.',
     )
 
-    assert main(['init', '--yes', '--import-history', '--apply-agents']) == 0
+    assert main(['init', '--yes', '--apply-agents']) == 0
+    assert main(['bootstrap']) == 0
 
     async def _assert_history() -> None:
         async with await MemoryEngine.open(tmp_path) as engine:
             sessions = engine.list_history_sessions(history_days=90)
             session = engine.read_history_session('claude-session', history_days=90, max_chars=200)
+            recall = await engine.recall('make test broad code search')
         assert any(item['session_id'] == 'claude-session' for item in sessions)
         assert 'Run `make test` before broad code search' in str(session['content'])
         assert 'tool_use' not in str(session['content'])
+        assert 'make test' in recall
 
     asyncio.run(_assert_history())
 
@@ -525,6 +548,9 @@ def test_mcp_stdio_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
         assert {
             'init_project',
             'discover_history',
+            'semantic_bootstrap',
+            'bootstrap_history',
+            'list_bootstrap_artifacts',
             'list_history_sessions',
             'read_history_session',
             'import_history_sessions',
@@ -594,6 +620,8 @@ async def test_mcp_init_project_and_apply_agents(
     assert payload['agents_updated'] is True
     assert payload['mcp_command'] == 'graphiti mcp --transport stdio'
     assert payload['codex_mcp_installed'] is False
+    assert payload['bootstrap_status'] == 'pending'
+    assert payload['bootstrap_artifact_candidates'] >= 1
     assert GRAPHITI_BLOCK_START in (tmp_path / 'AGENTS.md').read_text()
     assert not (fake_home / '.codex' / 'config.toml').exists()
 
@@ -631,23 +659,21 @@ async def test_mcp_history_discovery_read_and_import(
     imported = json.loads(
         await _call_tool(
             tmp_path,
-            'import_history_sessions',
-            {'session_ids': ['mcp-codex-session'], 'history_days': 90},
+            'semantic_bootstrap',
+            {'history_days': 90},
         )
     )
 
     assert discovery['history_sessions_detected'] == 1
     assert any(item['session_id'] == 'mcp-codex-session' for item in sessions)
     assert 'Pattern Y replaced pattern X after repeated retries.' in session['content']
-    assert imported == [
-        {
-            'session_id': 'mcp-codex-session',
-            'source_agent': 'codex',
-            'thread_title': 'Codex memory bootstrap',
-        }
-    ]
+    assert imported['processed_sessions'][0]['session_id'] == 'mcp-codex-session'
+    assert imported['processed_sessions'][0]['source_agent'] == 'codex'
+    assert imported['processed_sessions'][0]['thread_title'] == 'Codex memory bootstrap'
+    assert int(imported['processed_sessions'][0]['memory_count']) >= 1
 
     async with await MemoryEngine.open(tmp_path) as engine:
         doctor = await engine.doctor()
 
-    assert 'History bootstrap sessions: 1' in doctor
+    assert 'Semantic bootstrap processed sessions: 1' in doctor
+    assert 'Semantic bootstrap durable memories:' in doctor
