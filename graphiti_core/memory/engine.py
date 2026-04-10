@@ -61,6 +61,8 @@ from .models import (
     ProjectPaths,
     RuntimeConfig,
     build_project_paths,
+    default_bootstrap_session_state,
+    default_structured_graph_refs,
 )
 
 RECALL_LIMIT = 8
@@ -145,15 +147,7 @@ class MemoryEngine:
         graphiti = None
         structured_memory_enabled = False
 
-        llm_available = bool(config.llm_base_url or os.getenv(config.llm_api_key_env))
-        embedder_available = bool(
-            config.embedder_base_url
-            or config.llm_base_url
-            or os.getenv(config.embedder_api_key_env)
-            or os.getenv(config.llm_api_key_env)
-        )
-
-        if llm_available and embedder_available:
+        if cls.structured_graph_available(config):
             try:
                 from graphiti_core.embedder import OpenAIEmbedder, OpenAIEmbedderConfig
                 from graphiti_core.graphiti import Graphiti
@@ -262,6 +256,25 @@ class MemoryEngine:
         return BOOTSTRAP_WARN_THRESHOLD
 
     @classmethod
+    def structured_graph_available(cls, config: RuntimeConfig) -> bool:
+        llm_available = bool(config.llm_base_url or os.getenv(config.llm_api_key_env))
+        embedder_available = bool(
+            config.embedder_base_url
+            or config.llm_base_url
+            or os.getenv(config.embedder_api_key_env)
+            or os.getenv(config.llm_api_key_env)
+        )
+        if not (llm_available and embedder_available):
+            return False
+        try:
+            import graphiti_core.embedder  # noqa: F401
+            import graphiti_core.graphiti  # noqa: F401
+            import graphiti_core.llm_client  # noqa: F401
+        except ImportError:
+            return False
+        return True
+
+    @classmethod
     def discover_history(cls, root: Path, history_days: int = 90) -> BootstrapDiscovery:
         return discover_project_history(root, max_age_days=history_days)
 
@@ -308,11 +321,20 @@ class MemoryEngine:
         start: Path | None = None,
         force: bool = False,
         config: RuntimeConfig | None = None,
+        history_days: int = 90,
     ) -> tuple[ProjectPaths, RuntimeConfig]:
         root = (start or Path.cwd()).resolve()
         if config is None:
             config = MemoryEngine.default_runtime_config(root)
-        return initialize_project_files(root, force=force, config=config)
+        paths, runtime = initialize_project_files(root, force=force, config=config)
+        discovery = MemoryEngine.discover_history(paths.root, history_days=history_days)
+        MemoryEngine.sync_semantic_bootstrap_state(
+            paths.root,
+            history_days=history_days,
+            discovery=discovery,
+            requested_backend=runtime.backend,
+        )
+        return paths, runtime
 
     @staticmethod
     def apply_managed_agents_block(start: Path | None = None) -> Path:
@@ -330,6 +352,14 @@ class MemoryEngine:
         project = build_project_paths(root)
         history = cls.discover_history(root, history_days=history_days)
         backend = cls.choose_backend(root, requested_backend=requested_backend)
+        runtime_config = cls._load_runtime_config_for_root(root, requested_backend=backend)
+        state = load_index_state(project.index_state_path)
+        bootstrap = cls._semantic_bootstrap_summary(
+            state,
+            history,
+            history_days=history_days,
+            structured_graph_available=cls.structured_graph_available(runtime_config),
+        )
         return {
             'root': str(root),
             'state_dir': str(project.state_dir),
@@ -347,7 +377,116 @@ class MemoryEngine:
             'codex_config_path': str(codex_config_path()),
             'codex_mcp_server_name': 'graphiti',
             'codex_mcp_installed': codex_mcp_server_installed(),
+            **bootstrap,
         }
+
+    @classmethod
+    def _load_runtime_config_for_root(
+        cls,
+        root: Path,
+        *,
+        requested_backend: BackendType | None = None,
+    ) -> RuntimeConfig:
+        project = build_project_paths(root)
+        if project.config_path.exists():
+            return load_runtime_config(project.config_path)
+        return cls.default_runtime_config(
+            root,
+            backend=cls.choose_backend(root, requested_backend=requested_backend),
+        )
+
+    @classmethod
+    def _session_bootstrap_processed(
+        cls,
+        session: BootstrapSession,
+        session_state: dict[str, Any] | None,
+    ) -> bool:
+        if not session_state:
+            return False
+        return (
+            session_state.get('status') == 'processed'
+            and session_state.get('fingerprint') == session.fingerprint
+        )
+
+    @classmethod
+    def _semantic_bootstrap_summary(
+        cls,
+        state: dict[str, Any],
+        discovery: BootstrapDiscovery,
+        *,
+        history_days: int,
+        structured_graph_available: bool,
+    ) -> dict[str, Any]:
+        bootstrap_state = state.get('semantic_bootstrap', {})
+        sessions_state = bootstrap_state.get('sessions', {})
+        eligible_sessions = discovery.all_sessions()
+        processed_current = 0
+        for session in eligible_sessions:
+            if cls._session_bootstrap_processed(session, sessions_state.get(session.session_id)):
+                processed_current += 1
+
+        durable_memory_count = sum(
+            len(session.get('durable_memory_uuids', [])) for session in sessions_state.values()
+        )
+        structured_graph_extracted = any(
+            any(refs for refs in session.get('structured_graph_refs', {}).values())
+            for session in sessions_state.values()
+        )
+        bootstrap_pending = bool(eligible_sessions) and processed_current < len(eligible_sessions)
+        if bootstrap_pending:
+            bootstrap_status = 'pending'
+        elif eligible_sessions:
+            bootstrap_status = 'completed'
+        else:
+            bootstrap_status = 'not_needed'
+
+        return {
+            'bootstrap_status': bootstrap_status,
+            'bootstrap_pending': bootstrap_pending,
+            'bootstrap_completed_at': bootstrap_state.get('bootstrap_completed_at', ''),
+            'bootstrap_history_days': bootstrap_state.get('bootstrap_history_days', history_days),
+            'bootstrap_eligible_sessions': len(eligible_sessions),
+            'bootstrap_processed_sessions': processed_current,
+            'bootstrap_tracked_sessions': len(sessions_state),
+            'bootstrap_durable_memories': durable_memory_count,
+            'bootstrap_structured_graph_available': structured_graph_available,
+            'bootstrap_structured_graph_extracted': structured_graph_extracted,
+            'history_sessions_detected': len(eligible_sessions),
+        }
+
+    @classmethod
+    def sync_semantic_bootstrap_state(
+        cls,
+        start: Path | None = None,
+        *,
+        history_days: int = 90,
+        discovery: BootstrapDiscovery | None = None,
+        requested_backend: BackendType | None = None,
+    ) -> dict[str, Any]:
+        root = detect_project_root((start or Path.cwd()).resolve())
+        project = build_project_paths(root)
+        project.state_dir.mkdir(parents=True, exist_ok=True)
+        runtime_config = cls._load_runtime_config_for_root(
+            root, requested_backend=requested_backend
+        )
+        history = discovery or cls.discover_history(root, history_days=history_days)
+        state = load_index_state(project.index_state_path)
+        summary = cls._semantic_bootstrap_summary(
+            state,
+            history,
+            history_days=history_days,
+            structured_graph_available=cls.structured_graph_available(runtime_config),
+        )
+        bootstrap_state = state.setdefault('semantic_bootstrap', {})
+        bootstrap_state['bootstrap_pending'] = summary['bootstrap_pending']
+        bootstrap_state['bootstrap_history_days'] = history_days
+        bootstrap_state['last_checked_at'] = utc_now().isoformat()
+        bootstrap_state['eligible_sessions'] = summary['bootstrap_eligible_sessions']
+        bootstrap_state['structured_graph_available'] = summary[
+            'bootstrap_structured_graph_available'
+        ]
+        save_index_state(project.index_state_path, state)
+        return summary
 
     def _memory_name(self, kind: MemoryKind, summary: str) -> str:
         return f'{kind.value}: {summary[:120]}'
@@ -435,6 +574,49 @@ class MemoryEngine:
             created_at=timestamp,
             existing_uuid=existing_uuid,
         )
+
+    async def _ingest_source_episode(
+        self,
+        *,
+        name: str,
+        content: str,
+        source_description: str,
+        created_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        timestamp = created_at or utc_now()
+        if self.structured_memory_enabled and self.graphiti is not None:
+            result = await self.graphiti.add_episode(
+                name=name,
+                episode_body=content,
+                source_description=source_description,
+                reference_time=timestamp,
+                source=EpisodeType.text,
+                group_id=self.config.project_id,
+            )
+            return {
+                'episode_uuid': result.episode.uuid,
+                'structured_graph_refs': {
+                    'episode_uuids': [result.episode.uuid],
+                    'episodic_edge_uuids': [edge.uuid for edge in result.episodic_edges],
+                    'node_uuids': [node.uuid for node in result.nodes],
+                    'edge_uuids': [edge.uuid for edge in result.edges],
+                    'community_uuids': [community.uuid for community in result.communities],
+                    'community_edge_uuids': [
+                        community_edge.uuid for community_edge in result.community_edges
+                    ],
+                },
+            }
+
+        episode = await self._save_plain_episode(
+            name=name,
+            content=content,
+            source_description=source_description,
+            created_at=timestamp,
+        )
+        return {
+            'episode_uuid': episode.uuid,
+            'structured_graph_refs': default_structured_graph_refs(),
+        }
 
     def list_history_sessions(
         self,
@@ -1145,6 +1327,15 @@ class MemoryEngine:
         for episode_uuid in episode_uuids:
             await self._delete_episode_if_present(episode_uuid)
 
+    @staticmethod
+    def _append_unique_strings(current: list[str], values: list[str]) -> list[str]:
+        seen = set(current)
+        for value in values:
+            if value and value not in seen:
+                current.append(value)
+                seen.add(value)
+        return current
+
     async def index(
         self, *, changed_only: bool = False, max_files: int = 24
     ) -> list[dict[str, str]]:
@@ -1206,29 +1397,62 @@ class MemoryEngine:
         history_days: int = 90,
         discovery: BootstrapDiscovery | None = None,
         distill_memories: bool = True,
+        force: bool = False,
+    ) -> list[dict[str, str]]:
+        return await self.bootstrap_history(
+            session_ids=session_ids,
+            history_days=history_days,
+            discovery=discovery,
+            force=force,
+            distill_memories=distill_memories,
+        )
+
+    async def bootstrap_history(
+        self,
+        *,
+        session_ids: list[str] | None = None,
+        history_days: int = 90,
+        discovery: BootstrapDiscovery | None = None,
+        force: bool = False,
+        distill_memories: bool = True,
     ) -> list[dict[str, str]]:
         discovery = discovery or self.discover_history(self.project.root, history_days)
         with project_lock(self.lock_path):
             state = load_index_state(self.project.index_state_path)
-            history_state = state.setdefault(
-                'history_bootstrap', {'sessions': {}, 'last_bootstrap_at': ''}
-            )
-            sessions_state = history_state.setdefault('sessions', {})
+            bootstrap_state = state.setdefault('semantic_bootstrap', {})
+            sessions_state = bootstrap_state.setdefault('sessions', {})
             imported: list[dict[str, str]] = []
             selected_session_ids = set(session_ids or [])
+            timestamp = utc_now().isoformat()
 
             for session in discovery.all_sessions():
                 if selected_session_ids and session.session_id not in selected_session_ids:
                     continue
-                previous = sessions_state.get(session.session_id, {})
-                if previous.get('fingerprint') == session.fingerprint:
+
+                previous = default_bootstrap_session_state()
+                previous.update(sessions_state.get(session.session_id, {}))
+                previous_refs = default_structured_graph_refs()
+                previous_refs.update(previous.get('structured_graph_refs', {}))
+                previous['structured_graph_refs'] = previous_refs
+
+                if not force and self._session_bootstrap_processed(session, previous):
                     continue
 
-                await self._delete_episodes(previous.get('source_episode_uuids', []))
-                await self._delete_episodes(previous.get('memory_episode_uuids', []))
+                if force:
+                    await self._delete_episodes(previous.get('source_episode_uuids', []))
+                    await self._delete_episodes(previous.get('durable_memory_uuids', []))
+                    source_episode_uuids: list[str] = []
+                    durable_memory_uuids: list[str] = []
+                    structured_graph_refs = default_structured_graph_refs()
+                else:
+                    source_episode_uuids = list(previous.get('source_episode_uuids', []))
+                    durable_memory_uuids = list(previous.get('durable_memory_uuids', []))
+                    structured_graph_refs = {
+                        key: list(values)
+                        for key, values in previous.get('structured_graph_refs', {}).items()
+                    }
 
-                source_episode_uuids: list[str] = []
-                memory_episode_uuids: list[str] = []
+                new_memory_count = 0
                 session_header = '\n'.join(
                     [
                         f'Source Agent: {session.source_agent}',
@@ -1243,13 +1467,20 @@ class MemoryEngine:
                 for index, chunk in enumerate(
                     session.content_chunks(BOOTSTRAP_CHUNK_LIMIT), start=1
                 ):
-                    episode = await self._save_source_episode(
+                    ingested = await self._ingest_source_episode(
                         name=f'bootstrap:{session.source_agent}:{session.title[:96]} (part {index})',
                         content=f'{session_header}\n{chunk}',
                         source_description=f'bootstrap:{session.source_agent}',
                         created_at=session.created_at,
                     )
-                    source_episode_uuids.append(episode.uuid)
+                    source_episode_uuids = self._append_unique_strings(
+                        source_episode_uuids, [ingested['episode_uuid']]
+                    )
+                    for key, values in ingested['structured_graph_refs'].items():
+                        structured_graph_refs[key] = self._append_unique_strings(
+                            structured_graph_refs.get(key, []),
+                            list(values),
+                        )
 
                 if distill_memories:
                     for kind, summary, details in self._history_memory_candidates(session):
@@ -1258,24 +1489,32 @@ class MemoryEngine:
                             summary=summary,
                             details=details,
                             source=f'history:{session.source_agent}',
-                            tags=['history_bootstrap', session.source_agent],
+                            tags=['semantic_bootstrap', session.source_agent],
                             provenance={
                                 'Session ID': session.session_id,
                                 'Thread Title': session.title,
+                                'Source Agent': session.source_agent,
                                 'Source Path': session.source_path,
-                                'Captured From': 'history bootstrap distillation',
+                                'Captured From': 'semantic bootstrap distillation',
                             },
                             captured_at=session.created_at,
                         )
-                        memory_episode_uuids.append(remembered['uuid'])
+                        durable_memory_uuids = self._append_unique_strings(
+                            durable_memory_uuids, [remembered['uuid']]
+                        )
+                        new_memory_count += 1
 
                 sessions_state[session.session_id] = {
                     'fingerprint': session.fingerprint,
+                    'status': 'processed',
+                    'processed_at': timestamp,
+                    'history_days': history_days,
                     'source_agent': session.source_agent,
                     'thread_title': session.title,
                     'created_at': session.created_at.isoformat(),
                     'source_episode_uuids': source_episode_uuids,
-                    'memory_episode_uuids': memory_episode_uuids,
+                    'durable_memory_uuids': durable_memory_uuids,
+                    'structured_graph_refs': structured_graph_refs,
                     'source_path': session.source_path,
                 }
                 imported.append(
@@ -1283,24 +1522,27 @@ class MemoryEngine:
                         'session_id': session.session_id,
                         'source_agent': session.source_agent,
                         'thread_title': session.title,
-                        'memory_count': str(len(memory_episode_uuids)),
+                        'memory_count': str(new_memory_count),
                     }
                 )
 
-            history_state['last_bootstrap_at'] = utc_now().isoformat()
+            bootstrap_state['bootstrap_history_days'] = history_days
+            bootstrap_state['last_checked_at'] = timestamp
+            bootstrap_state['eligible_sessions'] = discovery.total_sessions
+            bootstrap_state['structured_graph_available'] = self.structured_memory_enabled
+
+            summary = self._semantic_bootstrap_summary(
+                state,
+                discovery,
+                history_days=history_days,
+                structured_graph_available=self.structured_memory_enabled,
+            )
+            bootstrap_state['bootstrap_pending'] = summary['bootstrap_pending']
+            if not summary['bootstrap_pending'] and discovery.total_sessions > 0:
+                bootstrap_state['bootstrap_completed_at'] = timestamp
+
             save_index_state(self.project.index_state_path, state)
             return imported
-
-    async def bootstrap_history(
-        self,
-        *,
-        history_days: int = 90,
-        discovery: BootstrapDiscovery | None = None,
-    ) -> list[dict[str, str]]:
-        return await self.import_history_sessions(
-            history_days=history_days,
-            discovery=discovery,
-        )
 
     async def doctor(self) -> str:
         records = await self._query_records(
@@ -1314,11 +1556,15 @@ class MemoryEngine:
         episode_count = records[0]['episode_count'] if records else 0
         state = load_index_state(self.project.index_state_path)
         artifact_count = len(state.get('artifacts', {}))
-        history_state = state.get('history_bootstrap', {})
-        imported_session_count = len(history_state.get('sessions', {}))
-        imported_memory_count = sum(
-            len(session.get('memory_episode_uuids', []))
-            for session in history_state.get('sessions', {}).values()
+        discovery = self.discover_history(
+            self.project.root,
+            history_days=state.get('semantic_bootstrap', {}).get('bootstrap_history_days', 90),
+        )
+        bootstrap = self._semantic_bootstrap_summary(
+            state,
+            discovery,
+            history_days=state.get('semantic_bootstrap', {}).get('bootstrap_history_days', 90),
+            structured_graph_available=self.structured_memory_enabled,
         )
         structured_status = (
             'enabled'
@@ -1338,9 +1584,22 @@ class MemoryEngine:
             f'Codex MCP command: {graphiti_mcp_command()}',
             f'Episodes: {episode_count}',
             f'Indexed artifacts: {artifact_count}',
-            f'History bootstrap sessions: {imported_session_count}',
-            f'History bootstrap memories: {imported_memory_count}',
-            f'Last bootstrap: {history_state.get("last_bootstrap_at", "") or "not run"}',
+            f'Semantic bootstrap status: {bootstrap["bootstrap_status"]}',
+            f'Semantic bootstrap pending: {"yes" if bootstrap["bootstrap_pending"] else "no"}',
+            f'Semantic bootstrap eligible sessions: {bootstrap["bootstrap_eligible_sessions"]}',
+            f'Semantic bootstrap processed sessions: {bootstrap["bootstrap_processed_sessions"]}',
+            f'Semantic bootstrap durable memories: {bootstrap["bootstrap_durable_memories"]}',
+            'Semantic bootstrap structured graph: '
+            + (
+                'available and extracted'
+                if bootstrap['bootstrap_structured_graph_extracted']
+                and bootstrap['bootstrap_structured_graph_available']
+                else 'available but not extracted'
+                if bootstrap['bootstrap_structured_graph_available']
+                else 'unavailable'
+            ),
+            'Semantic bootstrap completed at: '
+            + (bootstrap['bootstrap_completed_at'] or 'not completed'),
             f'Agent instructions: {self.project.agent_instructions_path}',
         ]
         return '\n'.join(lines)
