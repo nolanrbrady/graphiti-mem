@@ -898,6 +898,33 @@ def test_cli_main_error_handling(monkeypatch: pytest.MonkeyPatch, capsys) -> Non
     assert 'boom' in capsys.readouterr().out
 
 
+def test_codex_bootstrap_prompt_and_launcher(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    root = Path('/tmp/demo-repo')
+    prompt = cli._codex_bootstrap_prompt(root, history_days=30, force=True)
+
+    assert str(root) in prompt
+    assert 'semantic_bootstrap' in prompt
+    assert 'graphiti bootstrap --history-days 30 --force' in prompt
+
+    recorded: dict[str, Any] = {}
+
+    def fake_run(command: list[str], cwd: Path):
+        recorded['command'] = command
+        recorded['cwd'] = cwd
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(cli.subprocess, 'run', fake_run)
+
+    rc = cli._run_bootstrap_via_codex(root, history_days=30, force=True)
+    output = capsys.readouterr().out
+
+    assert rc == 0
+    assert recorded['command'][0:2] == ['codex', 'exec']
+    assert 'semantic_bootstrap' in recorded['command'][2]
+    assert recorded['cwd'] == root
+    assert 'Launching Codex semantic bootstrap' in output
+
+
 @pytest.mark.asyncio
 async def test_engine_structured_and_recall_helper_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

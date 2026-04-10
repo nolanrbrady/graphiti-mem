@@ -8,7 +8,7 @@ The supported runtime surface in this repository is intentionally narrow:
 
 - `graphiti mcp --transport stdio`
 - MCP tools: `init_project`, `discover_history`, `list_history_sessions`, `read_history_session`, `import_history_sessions`, `apply_agents_instructions`, `store_memory`, `recall_memory`, `index_project`, `doctor`
-- CLI fallback and dev tools: `graphiti init`, `graphiti recall`, `graphiti remember`, `graphiti index`, `graphiti doctor`
+- CLI fallback and dev tools: `graphiti init`, `graphiti bootstrap`, `graphiti recall`, `graphiti remember`, `graphiti index`, `graphiti doctor`
 - Benchmark tooling: `python -m graphiti_core.memory.benchmark run`, `make benchmark-memory`, `make benchmark-memory-dogfood`
 
 It stores repo-scoped memory under `.graphiti/` and uses Kuzu as the default local backend. Neo4j is retained as a fallback backend for the underlying graph engine, but the turnkey workflow is local-first and MCP-first.
@@ -59,8 +59,15 @@ Initialize memory in a repo:
 graphiti init
 ```
 
-`graphiti init` now acts as a local development onboarding flow. It creates `.graphiti/`, detects project-local Codex or Claude transcript history from disk, bootstraps those sessions into source evidence plus durable memory by default, and can update `AGENTS.md` with a managed Graphiti block.
+`graphiti init` now acts as a local development onboarding flow. It creates `.graphiti/`, detects project-local Codex or Claude transcript history from disk, records whether semantic bootstrap is pending, and can update `AGENTS.md` with a managed Graphiti block.
 If you want Codex to know about Graphiti globally, `graphiti init --install-mcp` installs a `graphiti` MCP server entry into `~/.codex/config.toml` using the current Python executable.
+
+If semantic bootstrap is pending and the user approves it, run it explicitly:
+
+```bash
+graphiti bootstrap
+graphiti bootstrap --agent codex
+```
 
 Store a durable memory:
 
@@ -148,7 +155,7 @@ For normal Codex usage, prefer the MCP server and let the agent handle reasoning
 - selected docs
 - optional recent git history summary
 
-During onboarding, Graphiti can also register project-matching Codex and Claude conversations stored on disk as source evidence and distill durable memory from them. That bootstrap is scoped to the current repo, defaults to the last 90 days, and can take several minutes on larger histories.
+During onboarding, Graphiti detects project-matching Codex and Claude conversations stored on disk and reports whether semantic bootstrap is pending. That bootstrap is scoped to the current repo, defaults to the last 90 days, and can take several minutes on larger histories, so it now runs only when explicitly requested with `graphiti bootstrap` or approved through MCP.
 
 ## Fallback Modes
 

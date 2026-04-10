@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import subprocess
 import sys
 from pathlib import Path
 
@@ -53,7 +54,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     bootstrap_parser = subparsers.add_parser(
-        'bootstrap', help='Run semantic bootstrap for recent history and high-signal repo artifacts'
+        'bootstrap',
+        help='Run semantic bootstrap for recent history and high-signal repo artifacts or hand off to Codex',
+    )
+    bootstrap_parser.add_argument(
+        '--agent',
+        choices=['codex'],
+        help='Hand off semantic bootstrap to a coding agent instead of running it directly',
     )
     bootstrap_parser.add_argument(
         '--history-days',
@@ -125,6 +132,41 @@ def _prompt_yes_no(prompt: str, *, default: bool = True, interactive: bool = Tru
         if response in {'n', 'no'}:
             return False
         print('Please answer yes or no.')
+
+
+def _codex_bootstrap_prompt(root: Path, *, history_days: int, force: bool) -> str:
+    force_text = 'true' if force else 'false'
+    return '\n'.join(
+        [
+            f'You are working in the repository at {root}.',
+            'The user approved Graphiti semantic bootstrap for this project.',
+            'Do not do broad repo exploration before semantic bootstrap is handled.',
+            'Use Graphiti as the source of truth for bootstrap state.',
+            '',
+            'Required workflow:',
+            '1. If Graphiti MCP is available, use it. Call `init_project` only if Graphiti is not initialized.',
+            f'2. Inspect bootstrap state with `discover_history` using `history_days={history_days}`.',
+            f'3. If bootstrap is pending, run `semantic_bootstrap` with `history_days={history_days}` and `force={force_text}`.',
+            f'4. If MCP is unavailable, run `graphiti bootstrap --history-days {history_days}'
+            + (' --force`' if force else '`')
+            + ' as the fallback path.',
+            '5. Report processed session count, durable memory count, and final bootstrap status.',
+            '',
+            'Do not make unrelated code changes.',
+        ]
+    )
+
+
+def _run_bootstrap_via_codex(root: Path, *, history_days: int, force: bool) -> int:
+    prompt = _codex_bootstrap_prompt(root, history_days=history_days, force=force)
+    command = ['codex', 'exec', prompt]
+    print(f'Launching Codex semantic bootstrap in {root}')
+    try:
+        completed = subprocess.run(command, cwd=root)
+    except FileNotFoundError:
+        print('`codex` is not installed or not available on PATH.')
+        return 1
+    return int(completed.returncode)
 
 
 async def _run_init(args: argparse.Namespace) -> int:
@@ -215,7 +257,10 @@ async def _run_init(args: argparse.Namespace) -> int:
     print('')
     print('Recommended next steps:')
     print('- Run `graphiti doctor` to verify backend and bootstrap status.')
-    print('- If semantic bootstrap is pending, ask the user before running `graphiti bootstrap`.')
+    print(
+        '- If semantic bootstrap is pending, ask the user before running '
+        '`graphiti bootstrap` or `graphiti bootstrap --agent codex`.'
+    )
     print('- Prefer MCP tools for onboarding and memory management inside Codex.')
     print(
         '- Use `graphiti recall "<current task>"` and `graphiti remember ...` as local dev/test equivalents.'
@@ -231,8 +276,15 @@ async def _run_async(args: argparse.Namespace) -> int:
         return await _run_init(args)
 
     if args.command == 'bootstrap':
-        async with await MemoryEngine.open(Path.cwd()) as engine:
-            discovery = MemoryEngine.discover_history(Path.cwd(), history_days=args.history_days)
+        root = Path.cwd()
+        if getattr(args, 'agent', None) == 'codex':
+            return _run_bootstrap_via_codex(
+                root,
+                history_days=args.history_days,
+                force=bool(args.force),
+            )
+        async with await MemoryEngine.open(root) as engine:
+            discovery = MemoryEngine.discover_history(root, history_days=args.history_days)
             result = await engine.semantic_bootstrap(
                 history_days=args.history_days,
                 discovery=discovery,

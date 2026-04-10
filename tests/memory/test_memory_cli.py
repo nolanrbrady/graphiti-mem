@@ -13,6 +13,7 @@ import pytest
 
 pytest.importorskip('kuzu')
 
+from graphiti_core.memory import cli
 from graphiti_core.memory.cli import main
 from graphiti_core.memory.config import GRAPHITI_BLOCK_END, GRAPHITI_BLOCK_START
 from graphiti_core.memory.engine import MemoryEngine
@@ -511,6 +512,29 @@ def test_bootstrap_processes_claude_history_and_ignores_noise(
         assert 'make test' in recall
 
     asyncio.run(_assert_history())
+
+
+def test_bootstrap_can_delegate_to_codex(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    write_project_files(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    recorded: dict[str, object] = {}
+
+    def fake_run(command: list[str], cwd: Path):
+        recorded['command'] = command
+        recorded['cwd'] = cwd
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(cli.subprocess, 'run', fake_run)
+
+    assert main(['bootstrap', '--agent', 'codex', '--history-days', '45']) == 0
+    output = capsys.readouterr().out
+
+    assert recorded['command'][0:2] == ['codex', 'exec']
+    assert 'history_days=45' in str(recorded['command'][2])
+    assert recorded['cwd'] == tmp_path
+    assert 'Launching Codex semantic bootstrap' in output
 
 
 def test_mcp_stdio_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
