@@ -130,6 +130,41 @@ class BootstrapDiscovery:
 
 
 @dataclass(slots=True)
+class BootstrapArtifactCandidate:
+    artifact_path: str
+    title: str
+    artifact_type: str
+    fingerprint: str
+    content: str
+    reasons: list[str] = field(default_factory=list)
+
+    @property
+    def content_length(self) -> int:
+        return len(self.content)
+
+    def content_chunks(self, max_chars: int) -> list[str]:
+        if len(self.content) <= max_chars:
+            return [self.content]
+
+        lines = self.content.splitlines()
+        chunks: list[str] = []
+        current: list[str] = []
+        current_len = 0
+        for line in lines:
+            line_len = len(line) + 1
+            if current and current_len + line_len > max_chars:
+                chunks.append('\n'.join(current).strip())
+                current = [line]
+                current_len = line_len
+                continue
+            current.append(line)
+            current_len += line_len
+        if current:
+            chunks.append('\n'.join(current).strip())
+        return [chunk for chunk in chunks if chunk]
+
+
+@dataclass(slots=True)
 class OnboardingDecisions:
     apply_agents_update: bool
     import_history: bool
@@ -164,6 +199,24 @@ def default_bootstrap_session_state() -> dict:
     }
 
 
+def default_bootstrap_artifact_state() -> dict:
+    return {
+        'artifact_path': '',
+        'artifact_type': '',
+        'reasons': [],
+        'content_length': 0,
+        'fingerprint': '',
+        'indexed_fingerprint': '',
+        'distilled_fingerprint': '',
+        'source_episode_uuids': [],
+        'index_episode_uuid': '',
+        'durable_memory_uuids': [],
+        'structured_graph_refs': default_structured_graph_refs(),
+        'indexed_at': '',
+        'processed_at': '',
+    }
+
+
 def default_semantic_bootstrap_state() -> dict:
     return {
         'bootstrap_pending': False,
@@ -171,8 +224,11 @@ def default_semantic_bootstrap_state() -> dict:
         'bootstrap_history_days': 90,
         'last_checked_at': '',
         'eligible_sessions': 0,
+        'artifact_candidate_count': 0,
+        'artifact_completed_at': '',
         'structured_graph_available': False,
         'sessions': {},
+        'artifacts': {},
     }
 
 
@@ -197,7 +253,10 @@ def ensure_index_state_shape(state: dict | None) -> dict:
     bootstrap_state.setdefault('bootstrap_history_days', 90)
     bootstrap_state.setdefault('last_checked_at', '')
     bootstrap_state.setdefault('eligible_sessions', 0)
+    bootstrap_state.setdefault('artifact_candidate_count', 0)
+    bootstrap_state.setdefault('artifact_completed_at', '')
     bootstrap_state.setdefault('structured_graph_available', False)
+    bootstrap_state.setdefault('artifacts', {})
 
     legacy_state = state.get('history_bootstrap', {})
     if legacy_state:
@@ -230,6 +289,17 @@ def ensure_index_state_shape(state: dict | None) -> dict:
         refs.update(raw_session.get('structured_graph_refs', {}))
         session_state['structured_graph_refs'] = refs
         bootstrap_state['sessions'][session_id] = session_state
+
+    for artifact_path, raw_artifact in list(bootstrap_state['artifacts'].items()):
+        artifact_state = default_bootstrap_artifact_state()
+        artifact_state.update(raw_artifact)
+        artifact_state['reasons'] = list(raw_artifact.get('reasons', []))
+        artifact_state['source_episode_uuids'] = list(raw_artifact.get('source_episode_uuids', []))
+        artifact_state['durable_memory_uuids'] = list(raw_artifact.get('durable_memory_uuids', []))
+        refs = default_structured_graph_refs()
+        refs.update(raw_artifact.get('structured_graph_refs', {}))
+        artifact_state['structured_graph_refs'] = refs
+        bootstrap_state['artifacts'][artifact_path] = artifact_state
     return current
 
 

@@ -502,7 +502,9 @@ def test_channel_result_requires_provenance_for_hard_failures() -> None:
         difficulty='easy',
         gold_facts=[BenchmarkGoldFact(key='command', values=['make test'])],
         acceptable_support_sets=[BenchmarkSupportSet(source_ids=['artifact:README.md'])],
-        budgets=BenchmarkBudget(max_retrieval_calls=2, max_returned_context_chars=200, max_selected_items=1),
+        budgets=BenchmarkBudget(
+            max_retrieval_calls=2, max_returned_context_chars=200, max_selected_items=1
+        ),
         hard_fail_rules=[BenchmarkHardFailRule.missing_provenance],
         baseline_expectation=BenchmarkBaselineExpectation(
             minimum_treatment_accuracy=0.0,
@@ -538,7 +540,9 @@ def test_channel_result_distractor_zeroes_attribution() -> None:
         gold_facts=[BenchmarkGoldFact(key='target', values=['make benchmark-memory'])],
         acceptable_support_sets=[BenchmarkSupportSet(source_ids=['artifact:Makefile'])],
         distractor_source_ids=['artifact:docs/legacy-benchmark.md'],
-        budgets=BenchmarkBudget(max_retrieval_calls=2, max_returned_context_chars=300, max_selected_items=1),
+        budgets=BenchmarkBudget(
+            max_retrieval_calls=2, max_returned_context_chars=300, max_selected_items=1
+        ),
         hard_fail_rules=[BenchmarkHardFailRule.wrong_support],
         baseline_expectation=BenchmarkBaselineExpectation(
             minimum_treatment_accuracy=0.0,
@@ -579,7 +583,9 @@ def test_channel_result_paraphrase_fact_matching() -> None:
             )
         ],
         acceptable_support_sets=[BenchmarkSupportSet(source_ids=['artifact:README.md'])],
-        budgets=BenchmarkBudget(max_retrieval_calls=2, max_returned_context_chars=300, max_selected_items=1),
+        budgets=BenchmarkBudget(
+            max_retrieval_calls=2, max_returned_context_chars=300, max_selected_items=1
+        ),
         hard_fail_rules=[],
         baseline_expectation=BenchmarkBaselineExpectation(
             minimum_treatment_accuracy=0.0,
@@ -698,7 +704,9 @@ def test_channel_result_budget_overrun_zeroes_task_score() -> None:
         difficulty='easy',
         gold_facts=[BenchmarkGoldFact(key='style', values=['concise evidence-first answers'])],
         acceptable_support_sets=[BenchmarkSupportSet(source_ids=['artifact:AGENTS.md'])],
-        budgets=BenchmarkBudget(max_retrieval_calls=1, max_returned_context_chars=40, max_selected_items=1),
+        budgets=BenchmarkBudget(
+            max_retrieval_calls=1, max_returned_context_chars=40, max_selected_items=1
+        ),
         hard_fail_rules=[BenchmarkHardFailRule.budget_overrun],
         baseline_expectation=BenchmarkBaselineExpectation(
             minimum_treatment_accuracy=0.0,

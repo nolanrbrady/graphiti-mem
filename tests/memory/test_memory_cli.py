@@ -431,7 +431,8 @@ def test_init_detects_recent_project_codex_history_for_semantic_bootstrap(
 
     asyncio.run(_assert_history())
 
-    assert 'Semantic bootstrap: pending approval' in init_out
+    assert '- Semantic bootstrap status: pending' in init_out
+    assert '- Bootstrap artifact lane:' in init_out
 
     assert main(['bootstrap']) == 0
 
@@ -439,8 +440,9 @@ def test_init_detects_recent_project_codex_history_for_semantic_bootstrap(
         async with await MemoryEngine.open(tmp_path) as engine:
             doctor = await engine.doctor()
             recall = await engine.recall('pattern Y retries')
-        assert 'Semantic bootstrap status: completed' in doctor
+        assert 'Semantic bootstrap status: pending' in doctor
         assert 'Semantic bootstrap processed sessions: 1' in doctor
+        assert 'Semantic bootstrap artifact status: incomplete' in doctor
         assert 'Prefer pattern Y over pattern X' in recall or 'Relevant Decisions' in recall
 
     asyncio.run(_assert_bootstrapped_history())
@@ -548,6 +550,7 @@ def test_mcp_stdio_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
             'discover_history',
             'semantic_bootstrap',
             'bootstrap_history',
+            'list_bootstrap_artifacts',
             'list_history_sessions',
             'read_history_session',
             'import_history_sessions',
@@ -617,7 +620,8 @@ async def test_mcp_init_project_and_apply_agents(
     assert payload['agents_updated'] is True
     assert payload['mcp_command'] == 'graphiti mcp --transport stdio'
     assert payload['codex_mcp_installed'] is False
-    assert payload['bootstrap_status'] == 'not_needed'
+    assert payload['bootstrap_status'] == 'pending'
+    assert payload['bootstrap_artifact_candidates'] >= 1
     assert GRAPHITI_BLOCK_START in (tmp_path / 'AGENTS.md').read_text()
     assert not (fake_home / '.codex' / 'config.toml').exists()
 

@@ -111,9 +111,7 @@ def _visible_events(fixture: BenchmarkTaskFixture) -> list[BenchmarkScenarioEven
     if fixture.query_time is None:
         return _sorted_events(fixture.events)
     return [
-        event
-        for event in _sorted_events(fixture.events)
-        if event.timestamp <= fixture.query_time
+        event for event in _sorted_events(fixture.events) if event.timestamp <= fixture.query_time
     ]
 
 
@@ -138,7 +136,11 @@ def _invalid_temporal_support_ids(fixture: BenchmarkTaskFixture) -> set[str]:
                 for support_id in support_ids
                 if support_id.startswith(('memory:', 'session:'))
             )
-        if event.active_until is not None and fixture.query_time is not None and event.active_until < fixture.query_time:
+        if (
+            event.active_until is not None
+            and fixture.query_time is not None
+            and event.active_until < fixture.query_time
+        ):
             support_ids = temporal_event_support_ids(event)
             invalid_ids.update(
                 support_id
@@ -153,8 +155,7 @@ def _forbidden_support_hit(
     observed_support_ids: set[str],
 ) -> bool:
     return any(
-        support_set.source_ids
-        and set(support_set.source_ids).issubset(observed_support_ids)
+        support_set.source_ids and set(support_set.source_ids).issubset(observed_support_ids)
         for support_set in fixture.forbidden_support_sets
     )
 
@@ -330,7 +331,9 @@ def _multi_hop_trace_candidate_ids(
     return _dedupe_preserve(candidate_ids)
 
 
-def _memory_rank(engine: MemoryEngine, memory: ParsedMemoryEpisode, query: str) -> tuple[int, int, float, str]:
+def _memory_rank(
+    engine: MemoryEngine, memory: ParsedMemoryEpisode, query: str
+) -> tuple[int, int, float, str]:
     return (
         engine._memory_overlap_score(memory, query),
         -MEMORY_KIND_PRIORITY[memory.kind],
@@ -364,7 +367,9 @@ def _select_memories(
         return []
 
     artifacts = [memory for memory in ranked_memories if memory.kind is MemoryKind.index_artifact]
-    non_artifacts = [memory for memory in ranked_memories if memory.kind is not MemoryKind.index_artifact]
+    non_artifacts = [
+        memory for memory in ranked_memories if memory.kind is not MemoryKind.index_artifact
+    ]
     selected: list[ParsedMemoryEpisode] = []
 
     if task_type is BenchmarkTaskType.artifact_recall:
@@ -407,9 +412,7 @@ def _source_item_id(source: BaselineSource) -> str:
 def _source_line(source: BaselineSource, query: str) -> str:
     snippet = _matching_snippet(source.content, query, max_len=180)
     provenance = ','.join(source.provenance_ids) or 'none'
-    return (
-        f'- [{source.source_type}] {source.key} | provenance={provenance} | snippet={snippet}'
-    )
+    return f'- [{source.source_type}] {source.key} | provenance={provenance} | snippet={snippet}'
 
 
 def _memory_line(engine: MemoryEngine, memory: ParsedMemoryEpisode, query: str) -> str:
@@ -476,7 +479,9 @@ def _build_treatment_context(
     selected_memories: list[ParsedMemoryEpisode],
     fixture: BenchmarkTaskFixture,
 ) -> tuple[str, list[str], list[str]]:
-    non_artifacts = [memory for memory in selected_memories if memory.kind is not MemoryKind.index_artifact]
+    non_artifacts = [
+        memory for memory in selected_memories if memory.kind is not MemoryKind.index_artifact
+    ]
     artifacts = [memory for memory in selected_memories if memory.kind is MemoryKind.index_artifact]
     sections: list[tuple[str, list[tuple[str, str, list[str]]]]] = []
 
@@ -683,7 +688,10 @@ def _channel_result(
     )
     temporal_score, stale_support_hit = _temporal_score(fixture, trace)
     hard_failures: list[str] = []
-    if BenchmarkHardFailRule.missing_provenance in fixture.hard_fail_rules and not trace.provenance_ids:
+    if (
+        BenchmarkHardFailRule.missing_provenance in fixture.hard_fail_rules
+        and not trace.provenance_ids
+    ):
         hard_failures.append('missing_provenance')
     if BenchmarkHardFailRule.budget_overrun in fixture.hard_fail_rules and overruns:
         hard_failures.extend(overruns)
@@ -818,7 +826,9 @@ def _aggregate(results: list[BenchmarkTaskResult]) -> BenchmarkAggregateResult:
         mean_returned_context_chars=_mean(
             [float(result.treatment.context_chars) for result in results]
         ),
-        mean_control_context_chars=_mean([float(result.control.context_chars) for result in results]),
+        mean_control_context_chars=_mean(
+            [float(result.control.context_chars) for result in results]
+        ),
         gate_thresholds=STATIC_GATE_THRESHOLDS,
     )
 
@@ -843,9 +853,8 @@ def _gate_failure_reasons(
         failure_reasons.append('mean answer score below static threshold')
     if aggregate.mean_temporal_score < STATIC_GATE_THRESHOLDS['mean_temporal_score']:
         failure_reasons.append('mean temporal score below static threshold')
-    if (
-        aggregate.stale_support_failure_count
-        > int(STATIC_GATE_THRESHOLDS['max_stale_support_failures'])
+    if aggregate.stale_support_failure_count > int(
+        STATIC_GATE_THRESHOLDS['max_stale_support_failures']
     ):
         failure_reasons.append('stale support failures above static threshold')
 
@@ -941,7 +950,9 @@ def _any_fact(key: str, *values: str) -> BenchmarkGoldFact:
 
 
 def _support(*references: str) -> list[BenchmarkSupportSet]:
-    return [BenchmarkSupportSet(source_ids=[coerce_source_id(reference) for reference in references])]
+    return [
+        BenchmarkSupportSet(source_ids=[coerce_source_id(reference) for reference in references])
+    ]
 
 
 def _event_source_rank(event: BenchmarkScenarioEvent) -> tuple[datetime, str]:
@@ -953,7 +964,10 @@ def _current_artifact_snapshots(
 ) -> dict[str, BenchmarkScenarioEvent]:
     snapshots: dict[str, BenchmarkScenarioEvent] = {}
     for event in events:
-        if event.kind is not BenchmarkScenarioEventKind.artifact_snapshot or not event.artifact_path:
+        if (
+            event.kind is not BenchmarkScenarioEventKind.artifact_snapshot
+            or not event.artifact_path
+        ):
             continue
         snapshots[event.artifact_path] = event
     return snapshots
@@ -1047,7 +1061,9 @@ def _build_dogfood_fixture(
         forbidden_support_sets=_support(*(forbidden_support_refs or []))
         if forbidden_support_refs
         else [],
-        distractor_source_ids=[coerce_source_id(reference) for reference in (distractor_refs or [])],
+        distractor_source_ids=[
+            coerce_source_id(reference) for reference in (distractor_refs or [])
+        ],
         scenario_id=scenario_id,
         query_time=query_time,
         events=list(events or []),
@@ -1108,6 +1124,51 @@ def _build_dogfood_tasks(
                 support_refs=[mcp_source.key],
                 max_chars=1400,
                 notes='Derived from current repo onboarding docs.',
+                scenario_id=scenario_id,
+                query_time=query_time,
+                events=temporal_events,
+            )
+        )
+
+    agents_source = artifacts_by_key.get('AGENTS.md')
+    if agents_source is not None and 'recall' in agents_source.content.lower():
+        tasks.append(
+            _build_dogfood_fixture(
+                task_id='dogfood-artifact-agents',
+                tier='smoke',
+                query='What should the agent do before broad file search?',
+                task_type=BenchmarkTaskType.artifact_recall,
+                difficulty='easy',
+                facts=[_all_fact('workflow', 'recall', 'broad file search')],
+                support_refs=['AGENTS.md'],
+                max_chars=1400,
+                notes='Derived from the current repo AGENTS guidance.',
+                scenario_id=scenario_id,
+                query_time=query_time,
+                events=temporal_events,
+            )
+        )
+    bootstrap_source = next(
+        (
+            source
+            for source in artifact_sources
+            if 'bootstrap_pending' in source.content.lower()
+            or 'semantic bootstrap' in source.content.lower()
+        ),
+        None,
+    )
+    if bootstrap_source is not None:
+        tasks.append(
+            _build_dogfood_fixture(
+                task_id='dogfood-artifact-bootstrap-gate',
+                tier='smoke',
+                query='What is the Graphiti bootstrap gate before broad exploration?',
+                task_type=BenchmarkTaskType.artifact_recall,
+                difficulty='medium',
+                facts=[_all_fact('bootstrap_gate', 'approve', 'semantic bootstrap')],
+                support_refs=[bootstrap_source.key],
+                max_chars=1500,
+                notes='Derived from current repo bootstrap guidance.',
                 scenario_id=scenario_id,
                 query_time=query_time,
                 events=temporal_events,
@@ -1253,11 +1314,7 @@ def _build_dogfood_tasks(
         None,
     )
     current_seed = next(
-        (
-            seed
-            for seed in history_seeds
-            if seed is not stale_seed and seed.summary.strip()
-        ),
+        (seed for seed in history_seeds if seed is not stale_seed and seed.summary.strip()),
         None,
     )
     if stale_seed is not None and current_seed is not None:
@@ -1300,7 +1357,9 @@ async def _build_dogfood_engine_and_sources() -> tuple[
     current_root = detect_project_root(Path.cwd())
     artifact_sources = collect_dogfood_artifacts(current_root)
     if not artifact_sources:
-        raise RuntimeError('dogfood mode requires at least one high-signal artifact in the current repo')
+        raise RuntimeError(
+            'dogfood mode requires at least one high-signal artifact in the current repo'
+        )
 
     discovery = MemoryEngine.discover_history(current_root, history_days=3650)
     history_sources = build_dogfood_history_sources(discovery)
@@ -1315,9 +1374,7 @@ async def _build_dogfood_engine_and_sources() -> tuple[
     MemoryEngine.init_project(benchmark_root)
     engine = await MemoryEngine.open(benchmark_root)
     try:
-        await engine.index(changed_only=False, max_files=max(24, len(artifact_sources)))
-        if discovery.total_sessions:
-            await engine.import_history_sessions(discovery=discovery, history_days=3650)
+        await engine.semantic_bootstrap(discovery=discovery, history_days=3650)
         for seed in history_seeds:
             await engine.remember(
                 kind=seed.kind,
@@ -1363,7 +1420,9 @@ async def run_benchmark(
         current_root = detect_project_root(Path.cwd())
         artifact_sources = collect_dogfood_artifacts(current_root)
         if not artifact_sources:
-            raise RuntimeError('dogfood mode requires at least one high-signal artifact in the current repo')
+            raise RuntimeError(
+                'dogfood mode requires at least one high-signal artifact in the current repo'
+            )
         discovery = MemoryEngine.discover_history(current_root, history_days=3650)
         history_seeds = distill_history_seeds(discovery)
         dogfood_tasks = _build_dogfood_tasks(artifact_sources, history_seeds)
@@ -1392,7 +1451,9 @@ async def run_benchmark(
     if baseline is not None and (baseline.suite != effective_suite or baseline.tier != tier):
         raise ValueError('baseline result suite/tier does not match requested benchmark run')
 
-    temporal_cache: dict[tuple[str, str], tuple[MemoryEngine, list[BaselineSource], TemporaryDirectory]] = {}
+    temporal_cache: dict[
+        tuple[str, str], tuple[MemoryEngine, list[BaselineSource], TemporaryDirectory]
+    ] = {}
     try:
         task_results: list[BenchmarkTaskResult] = []
         for fixture in fixtures:
@@ -1415,10 +1476,14 @@ async def run_benchmark(
                 task_engine, task_sources, _ = cached
 
             if task_engine is None:
-                raise RuntimeError(f'benchmark engine was not initialized for task {fixture.task_id}')
+                raise RuntimeError(
+                    f'benchmark engine was not initialized for task {fixture.task_id}'
+                )
 
             control_context, control_trace = _build_control_context(task_sources, fixture)
-            treatment_context, treatment_trace = await _collect_treatment_channel(task_engine, fixture)
+            treatment_context, treatment_trace = await _collect_treatment_channel(
+                task_engine, fixture
+            )
             control = _channel_result(fixture, control_context, control_trace)
             treatment = _channel_result(fixture, treatment_context, treatment_trace)
             task_results.append(_task_result(fixture, control, treatment))
@@ -1470,7 +1535,8 @@ def compare_results(baseline: BenchmarkResult, candidate: BenchmarkResult) -> Be
         candidate_gate_passed=candidate.gate_passed,
         reward_delta=reward_delta,
         aggregate_deltas={
-            'mean_task_score': candidate.aggregate.mean_task_score - baseline.aggregate.mean_task_score,
+            'mean_task_score': candidate.aggregate.mean_task_score
+            - baseline.aggregate.mean_task_score,
             'mean_retrieval_score': candidate.aggregate.mean_retrieval_score
             - baseline.aggregate.mean_retrieval_score,
             'mean_attribution_score': candidate.aggregate.mean_attribution_score
@@ -1509,7 +1575,9 @@ def benchmark_doctor() -> BenchmarkDoctorResult:
     local_history_sessions = 0
     try:
         current_root = detect_project_root(Path.cwd())
-        local_history_sessions = MemoryEngine.discover_history(current_root, history_days=90).total_sessions
+        local_history_sessions = MemoryEngine.discover_history(
+            current_root, history_days=90
+        ).total_sessions
         if not collect_dogfood_artifacts(current_root):
             issues.append('dogfood mode has no high-signal repo artifacts to benchmark')
     except Exception as exc:

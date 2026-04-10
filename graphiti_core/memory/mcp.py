@@ -69,8 +69,19 @@ def _tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
+            'name': 'list_bootstrap_artifacts',
+            'description': 'List high-signal artifact candidates for semantic bootstrap distillation.',
+            'inputSchema': {
+                'type': 'object',
+                'properties': {
+                    'pending_only': {'type': 'boolean', 'default': False},
+                    'limit': {'type': 'integer'},
+                },
+            },
+        },
+        {
             'name': 'semantic_bootstrap',
-            'description': 'Process new or changed project transcript sessions into source episodes, durable memory, and graph structure when available.',
+            'description': 'Process new or changed project history plus high-signal repo artifacts into source episodes, indexed artifacts, durable memory, and graph structure when available.',
             'inputSchema': {
                 'type': 'object',
                 'properties': {
@@ -145,6 +156,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 'properties': {
                     'changed_only': {'type': 'boolean', 'default': True},
                     'max_files': {'type': 'integer', 'default': 24},
+                    'artifact_paths': {'type': 'array', 'items': {'type': 'string'}},
                 },
             },
         },
@@ -287,33 +299,19 @@ async def _call_tool(root: Path, name: str, arguments: dict[str, Any]) -> str:
             )
             return _json_text(payload)
 
+        if name == 'list_bootstrap_artifacts':
+            payload = engine.list_bootstrap_artifacts(
+                pending_only=bool(arguments.get('pending_only', False)),
+                limit=int(arguments['limit']) if arguments.get('limit') is not None else None,
+            )
+            return _json_text(payload)
+
         if name in {'semantic_bootstrap', 'bootstrap_history'}:
-            processed = await engine.bootstrap_history(
+            payload = await engine.semantic_bootstrap(
                 history_days=int(arguments.get('history_days', 90)),
                 force=bool(arguments.get('force', False)),
             )
-            state = MemoryEngine.sync_semantic_bootstrap_state(
-                root,
-                history_days=int(arguments.get('history_days', 90)),
-                requested_backend=getattr(getattr(engine, 'config', None), 'backend', None),
-            )
-            return _json_text(
-                {
-                    'processed_sessions': processed,
-                    'processed_count': len(processed),
-                    'durable_memories_created': sum(
-                        int(item.get('memory_count', '0')) for item in processed
-                    ),
-                    'bootstrap_status': state['bootstrap_status'],
-                    'bootstrap_pending': state['bootstrap_pending'],
-                    'bootstrap_eligible_sessions': state['bootstrap_eligible_sessions'],
-                    'bootstrap_processed_sessions': state['bootstrap_processed_sessions'],
-                    'bootstrap_completed_at': state['bootstrap_completed_at'],
-                    'bootstrap_structured_graph_available': state[
-                        'bootstrap_structured_graph_available'
-                    ],
-                }
-            )
+            return _json_text(payload)
 
         if name == 'import_history_sessions':
             payload = await engine.bootstrap_history(
@@ -343,6 +341,7 @@ async def _call_tool(root: Path, name: str, arguments: dict[str, Any]) -> str:
             indexed = await engine.index(
                 changed_only=bool(arguments.get('changed_only', True)),
                 max_files=int(arguments.get('max_files', 24)),
+                artifact_paths=list(arguments.get('artifact_paths') or []),
             )
             return _json_text(indexed)
 

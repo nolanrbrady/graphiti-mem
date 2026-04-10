@@ -53,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     bootstrap_parser = subparsers.add_parser(
-        'bootstrap', help='Run semantic bootstrap from recent project transcript history'
+        'bootstrap', help='Run semantic bootstrap for recent history and high-signal repo artifacts'
     )
     bootstrap_parser.add_argument(
         '--history-days',
@@ -186,19 +186,18 @@ async def _run_init(args: argparse.Namespace) -> int:
     )
     if history_count:
         print(f'- Matching transcript sessions detected: {history_count}')
-        if onboarding_state['bootstrap_pending']:
-            print(
-                '- Semantic bootstrap: pending approval '
-                f'({onboarding_state["bootstrap_processed_sessions"]}/{history_count} current sessions already processed)'
-            )
-        else:
-            print(
-                '- Semantic bootstrap: current '
-                f'({onboarding_state["bootstrap_processed_sessions"]}/{history_count} current sessions processed)'
-            )
     else:
         print('- Matching transcript sessions detected: 0')
-        print('- Semantic bootstrap: not needed')
+    print(
+        '- Bootstrap history lane: '
+        f'{onboarding_state["bootstrap_processed_sessions"]}/{onboarding_state["bootstrap_eligible_sessions"]} current sessions processed'
+    )
+    print(
+        '- Bootstrap artifact lane: '
+        f'{onboarding_state["bootstrap_artifact_processed"]}/{onboarding_state["bootstrap_artifact_candidates"]} artifacts distilled, '
+        f'{onboarding_state["bootstrap_artifact_indexed"]} indexed'
+    )
+    print(f'- Semantic bootstrap status: {onboarding_state["bootstrap_status"]}')
     if agents_path is not None:
         print(f'- Updated agent instructions: {agents_path}')
     else:
@@ -234,34 +233,35 @@ async def _run_async(args: argparse.Namespace) -> int:
     if args.command == 'bootstrap':
         async with await MemoryEngine.open(Path.cwd()) as engine:
             discovery = MemoryEngine.discover_history(Path.cwd(), history_days=args.history_days)
-            processed = await engine.bootstrap_history(
+            result = await engine.semantic_bootstrap(
                 history_days=args.history_days,
                 discovery=discovery,
                 force=bool(args.force),
             )
-            state = MemoryEngine.sync_semantic_bootstrap_state(
-                Path.cwd(),
-                history_days=args.history_days,
-                discovery=discovery,
-                requested_backend=getattr(getattr(engine, 'config', None), 'backend', None),
-            )
 
+        print(f'Semantic bootstrap processed {result["processed_count"]} history session(s).')
+        print('- History durable memories created: ' + str(result['durable_memories_created']))
         print(
-            f'Semantic bootstrap processed {len(processed)} session(s) '
-            f'out of {state["bootstrap_eligible_sessions"]} eligible session(s).'
+            '- Artifact candidates indexed: '
+            + f'{result["bootstrap_artifact_indexed"]}/{result["bootstrap_artifact_candidates"]}'
         )
         print(
-            '- Durable memories created: '
-            + str(sum(int(item.get('memory_count', '0')) for item in processed))
+            '- Artifact memories distilled: '
+            + f'{result["bootstrap_artifact_processed"]}/{result["bootstrap_artifact_candidates"]}'
         )
+        print('- Artifact lane status: ' + result['bootstrap_artifact_status'])
         print(
             '- Structured graph extraction: '
-            + ('available' if state['bootstrap_structured_graph_available'] else 'unavailable')
+            + ('available' if result['bootstrap_structured_graph_available'] else 'unavailable')
         )
-        print(
-            '- Bootstrap status: '
-            + ('pending' if state['bootstrap_pending'] else state['bootstrap_status'])
-        )
+        print('- Bootstrap status: ' + result['bootstrap_status'])
+        if result['pending_artifacts']:
+            print('- Pending bootstrap artifacts:')
+            for artifact in result['pending_artifacts'][:8]:
+                print(
+                    f'  - {artifact["artifact_path"]} [{artifact["artifact_type"]}] '
+                    + ', '.join(artifact['reasons'])
+                )
         return 0
 
     if args.command == 'mcp':
