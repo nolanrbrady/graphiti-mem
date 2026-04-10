@@ -44,6 +44,7 @@ class FakeEngine:
         self.remember_calls: list[dict[str, Any]] = []
         self.index_calls: list[dict[str, Any]] = []
         self.recall_calls: list[dict[str, Any]] = []
+        self.bootstrap_calls: list[dict[str, Any]] = []
 
     async def recall(self, query: str, limit: int = 8) -> str:
         self.recall_calls.append({'query': query, 'limit': limit})
@@ -91,8 +92,9 @@ class FakeEngine:
         history_days: int = 90,
         discovery: BootstrapDiscovery | None = None,
         distill_memories: bool = True,
+        force: bool = False,
     ) -> list[dict[str, str]]:
-        del distill_memories
+        del distill_memories, force
         if session_ids is not None:
             selected_ids = session_ids
         elif discovery is not None:
@@ -108,6 +110,31 @@ class FakeEngine:
             }
             for session_id in selected_ids
         ]
+
+    async def bootstrap_history(
+        self,
+        *,
+        session_ids: list[str] | None = None,
+        history_days: int = 90,
+        discovery: BootstrapDiscovery | None = None,
+        force: bool = False,
+        distill_memories: bool = True,
+    ) -> list[dict[str, str]]:
+        self.bootstrap_calls.append(
+            {
+                'session_ids': session_ids,
+                'history_days': history_days,
+                'force': force,
+                'distill_memories': distill_memories,
+            }
+        )
+        return await self.import_history_sessions(
+            session_ids=session_ids,
+            history_days=history_days,
+            discovery=discovery,
+            distill_memories=distill_memories,
+            force=force,
+        )
 
 
 def build_engine(root: Path) -> MemoryEngine:
@@ -167,7 +194,7 @@ def test_apply_agent_instructions_creates_and_replaces_managed_block(tmp_path: P
     agents_path = config.apply_agent_instructions(tmp_path)
     created = agents_path.read_text()
     assert config.GRAPHITI_BLOCK_START in created
-    assert 'MCP recall triggers:' in created
+    assert 'MCP bootstrap gate:' in created
     assert 'MCP write triggers:' in created
 
     agents_path.write_text(
@@ -222,8 +249,8 @@ def test_load_index_state_defaults_and_normalization(tmp_path: Path) -> None:
     loaded = config.load_index_state(state_path)
 
     assert loaded['artifacts']['README.md']['fingerprint'] == 'abc'
-    assert loaded['history_bootstrap']['sessions'] == {}
-    assert loaded['history_bootstrap']['last_bootstrap_at'] == ''
+    assert loaded['semantic_bootstrap']['sessions'] == {}
+    assert loaded['semantic_bootstrap']['bootstrap_completed_at'] == ''
 
 
 def test_load_runtime_config_raises_for_missing_file(tmp_path: Path) -> None:
@@ -497,6 +524,8 @@ async def test_engine_choose_backend_detect_state_and_query_records(
     monkeypatch.setenv('HOME', str(root))
     state = MemoryEngine.detect_onboarding_state(root, history_days=30)
     assert state['history_sessions_detected'] == 1
+    assert state['bootstrap_pending'] is True
+    assert state['bootstrap_status'] == 'pending'
     assert state['backend'] == 'neo4j'
     assert state['codex_config_path'].endswith('.codex/config.toml')
     assert state['codex_mcp_installed'] is False
@@ -682,7 +711,7 @@ async def test_cli_init_prompt_and_large_history_paths(
     )
     fake_engine = FakeEngine()
     prompts: list[str] = []
-    answers = iter([False, True])
+    answers = iter([False])
 
     async def fake_open(_cwd: Path):
         return FakeContext(fake_engine)
@@ -701,7 +730,7 @@ async def test_cli_init_prompt_and_large_history_paths(
     monkeypatch.setattr(
         cli.MemoryEngine,
         'init_project',
-        staticmethod(lambda root, force=False, config=None: (paths, config_obj)),
+        staticmethod(lambda root, force=False, config=None, history_days=90: (paths, config_obj)),
     )
     monkeypatch.setattr(
         cli.MemoryEngine,
@@ -725,8 +754,6 @@ async def test_cli_init_prompt_and_large_history_paths(
         argparse.Namespace(
             force=False,
             yes=False,
-            import_history=False,
-            skip_history=False,
             apply_agents=False,
             no_apply_agents=False,
             install_mcp=False,
@@ -739,11 +766,9 @@ async def test_cli_init_prompt_and_large_history_paths(
 
     assert rc == 0
     assert prompts[0].startswith('Apply the managed Graphiti block')
-    assert prompts[1].startswith('Bootstrap 1 matching Codex/Claude project sessions')
     assert '- Updated agent instructions:' not in output
     assert '- Left Codex MCP config unchanged' in output
-    assert '- Imported transcript source sessions: 1' in output
-    assert '- Distilled durable history memories: 1' in output
+    assert '- Semantic bootstrap: pending approval' in output
 
     large_discovery = BootstrapDiscovery(
         codex_sessions=[
@@ -769,8 +794,6 @@ async def test_cli_init_prompt_and_large_history_paths(
         argparse.Namespace(
             force=False,
             yes=False,
-            import_history=False,
-            skip_history=False,
             apply_agents=False,
             no_apply_agents=False,
             install_mcp=False,
@@ -782,7 +805,13 @@ async def test_cli_init_prompt_and_large_history_paths(
     output = capsys.readouterr().out
 
     assert rc == 0
-    assert '- Imported transcript source sessions: 12' in output
+    assert '- Matching transcript sessions detected: 12' in output
+
+    rc = await cli._run_async(argparse.Namespace(command='bootstrap', history_days=90, force=False))
+    output = capsys.readouterr().out
+
+    assert rc == 0
+    assert 'Semantic bootstrap processed 12 session(s)' in output
 
 
 def test_cli_main_error_handling(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
@@ -1137,9 +1166,20 @@ async def test_engine_recall_index_import_and_doctor_paths(
     )
     monkeypatch.setattr(
         engine,
-        '_save_source_episode',
+        '_ingest_source_episode',
         lambda **kwargs: asyncio.sleep(
-            0, result=SimpleNamespace(uuid=f'source-{len(kwargs["content"])}')
+            0,
+            result={
+                'episode_uuid': f'source-{len(kwargs["content"])}',
+                'structured_graph_refs': {
+                    'episode_uuids': [],
+                    'episodic_edge_uuids': [],
+                    'node_uuids': [],
+                    'edge_uuids': [],
+                    'community_uuids': [],
+                    'community_edge_uuids': [],
+                },
+            },
         ),
     )
     imported = await engine.import_history_sessions(discovery=discovery)
@@ -1155,10 +1195,15 @@ async def test_engine_recall_index_import_and_doctor_paths(
         '_query_records',
         lambda query, **kwargs: asyncio.sleep(0, result=[{'episode_count': 7}]),
     )
+    monkeypatch.setattr(
+        MemoryEngine,
+        'discover_history',
+        classmethod(lambda cls, root, history_days=90: discovery),
+    )
     doctor = await engine.doctor()
     assert 'Episodes: 7' in doctor
-    assert 'History bootstrap sessions: 1' in doctor
-    assert 'History bootstrap memories:' in doctor
+    assert 'Semantic bootstrap processed sessions: 1' in doctor
+    assert 'Semantic bootstrap durable memories:' in doctor
     assert 'Codex MCP installed:' in doctor
 
 
@@ -1168,12 +1213,12 @@ async def test_mcp_tool_definitions_and_stdio_dispatch(
 ) -> None:
     tools = {tool['name']: tool for tool in mcp._tool_definitions()}
     assert 'remember' in tools
+    assert 'semantic_bootstrap' in tools
     assert tools['init_project']['inputSchema']['properties']['backend']['enum'] == [
         'kuzu',
         'neo4j',
     ]
     assert tools['init_project']['inputSchema']['properties']['install_mcp']['default'] is False
-    assert tools['init_project']['inputSchema']['properties']['import_history']['default'] is True
 
     body = json.dumps({'jsonrpc': '2.0', 'method': 'ping'}).encode('utf-8')
     fake_stdin = SimpleNamespace(
@@ -1225,7 +1270,7 @@ async def test_mcp_tool_definitions_and_stdio_dispatch(
         mcp.MemoryEngine,
         'init_project',
         staticmethod(
-            lambda root, force=False, config=None: (
+            lambda root, force=False, config=None, history_days=90: (
                 build_project_paths(root),
                 config
                 or RuntimeConfig(
@@ -1243,6 +1288,12 @@ async def test_mcp_tool_definitions_and_stdio_dispatch(
         'configured': True,
         'backend': BackendType.kuzu.value,
         'history_sessions_detected': 1,
+        'bootstrap_status': 'pending',
+        'bootstrap_pending': True,
+        'bootstrap_eligible_sessions': 1,
+        'bootstrap_processed_sessions': 0,
+        'bootstrap_completed_at': '',
+        'bootstrap_structured_graph_available': False,
         'mcp_command': 'graphiti mcp --transport stdio',
         'codex_mcp_installed': True,
     }
@@ -1263,8 +1314,7 @@ async def test_mcp_tool_definitions_and_stdio_dispatch(
     assert init_payload['configured_backend'] == 'kuzu'
     assert 'codex_mcp_updated' in init_payload
     assert init_payload['codex_mcp_updated'] is False
-    assert init_payload['history_bootstrapped_sessions'] == 1
-    assert init_payload['history_bootstrapped_memories'] == 1
+    assert init_payload['bootstrap_pending'] is True
 
     monkeypatch.setattr(
         mcp,
@@ -1303,6 +1353,10 @@ async def test_mcp_tool_definitions_and_stdio_dispatch(
         )[0]['memory_count']
         == '1'
     )
+    bootstrap_payload = json.loads(
+        await mcp._call_tool(tmp_path, 'semantic_bootstrap', {'history_days': 30})
+    )
+    assert bootstrap_payload['processed_count'] == 1
     assert (
         json.loads(
             await mcp._call_tool(tmp_path, 'remember', {'kind': 'decision', 'summary': 'Prefer Y'})

@@ -31,7 +31,6 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     'backend': {'type': 'string', 'enum': backend_values},
                     'apply_agents': {'type': 'boolean', 'default': False},
                     'install_mcp': {'type': 'boolean', 'default': False},
-                    'import_history': {'type': 'boolean', 'default': True},
                     'history_days': {'type': 'integer', 'default': 90},
                 },
             },
@@ -70,14 +69,37 @@ def _tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
+            'name': 'semantic_bootstrap',
+            'description': 'Process new or changed project transcript sessions into source episodes, durable memory, and graph structure when available.',
+            'inputSchema': {
+                'type': 'object',
+                'properties': {
+                    'history_days': {'type': 'integer', 'default': 90},
+                    'force': {'type': 'boolean', 'default': False},
+                },
+            },
+        },
+        {
+            'name': 'bootstrap_history',
+            'description': 'Alias for semantic_bootstrap.',
+            'inputSchema': {
+                'type': 'object',
+                'properties': {
+                    'history_days': {'type': 'integer', 'default': 90},
+                    'force': {'type': 'boolean', 'default': False},
+                },
+            },
+        },
+        {
             'name': 'import_history_sessions',
-            'description': 'Store selected history sessions as source evidence and distill durable memory from them.',
+            'description': 'Legacy alias for semantic bootstrap with optional explicit session selection.',
             'inputSchema': {
                 'type': 'object',
                 'properties': {
                     'session_ids': {'type': 'array', 'items': {'type': 'string'}},
                     'history_days': {'type': 'integer', 'default': 90},
                     'distill_memories': {'type': 'boolean', 'default': True},
+                    'force': {'type': 'boolean', 'default': False},
                 },
             },
         },
@@ -212,6 +234,7 @@ async def _call_tool(root: Path, name: str, arguments: dict[str, Any]) -> str:
             root,
             force=bool(arguments.get('force', False)),
             config=config,
+            history_days=int(arguments.get('history_days', 90)),
         )
         agents_path = None
         if bool(arguments.get('apply_agents', False)):
@@ -227,17 +250,6 @@ async def _call_tool(root: Path, name: str, arguments: dict[str, Any]) -> str:
             history_days=int(arguments.get('history_days', 90)),
             requested_backend=requested_backend,
         )
-        imported: list[dict[str, str]] = []
-        if bool(arguments.get('import_history', True)) and payload['history_sessions_detected'] > 0:
-            async with await MemoryEngine.open(root) as engine:
-                imported = await engine.import_history_sessions(
-                    history_days=int(arguments.get('history_days', 90)),
-                )
-            payload = MemoryEngine.detect_onboarding_state(
-                root,
-                history_days=int(arguments.get('history_days', 90)),
-                requested_backend=requested_backend,
-            )
         payload['configured_backend'] = config.backend.value
         payload['config_path'] = str(paths.config_path)
         payload['agents_updated'] = bool(agents_path is not None)
@@ -246,10 +258,6 @@ async def _call_tool(root: Path, name: str, arguments: dict[str, Any]) -> str:
         payload['codex_mcp_updated'] = codex_config_updated
         if codex_config_path is not None:
             payload['codex_config_path_updated'] = str(codex_config_path)
-        payload['history_bootstrapped_sessions'] = len(imported)
-        payload['history_bootstrapped_memories'] = sum(
-            int(item.get('memory_count', '0')) for item in imported
-        )
         return _json_text(payload)
 
     if name == 'apply_agents_instructions':
@@ -279,10 +287,39 @@ async def _call_tool(root: Path, name: str, arguments: dict[str, Any]) -> str:
             )
             return _json_text(payload)
 
+        if name in {'semantic_bootstrap', 'bootstrap_history'}:
+            processed = await engine.bootstrap_history(
+                history_days=int(arguments.get('history_days', 90)),
+                force=bool(arguments.get('force', False)),
+            )
+            state = MemoryEngine.sync_semantic_bootstrap_state(
+                root,
+                history_days=int(arguments.get('history_days', 90)),
+                requested_backend=getattr(getattr(engine, 'config', None), 'backend', None),
+            )
+            return _json_text(
+                {
+                    'processed_sessions': processed,
+                    'processed_count': len(processed),
+                    'durable_memories_created': sum(
+                        int(item.get('memory_count', '0')) for item in processed
+                    ),
+                    'bootstrap_status': state['bootstrap_status'],
+                    'bootstrap_pending': state['bootstrap_pending'],
+                    'bootstrap_eligible_sessions': state['bootstrap_eligible_sessions'],
+                    'bootstrap_processed_sessions': state['bootstrap_processed_sessions'],
+                    'bootstrap_completed_at': state['bootstrap_completed_at'],
+                    'bootstrap_structured_graph_available': state[
+                        'bootstrap_structured_graph_available'
+                    ],
+                }
+            )
+
         if name == 'import_history_sessions':
-            payload = await engine.import_history_sessions(
+            payload = await engine.bootstrap_history(
                 session_ids=list(arguments.get('session_ids') or []),
                 history_days=int(arguments.get('history_days', 90)),
+                force=bool(arguments.get('force', False)),
                 distill_memories=bool(arguments.get('distill_memories', True)),
             )
             return _json_text(payload)
